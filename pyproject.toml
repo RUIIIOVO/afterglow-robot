@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afterglow-robot"
+version = "0.1.0"
+description = "Local-first offline text data pipeline for afterglow-robot."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+  "chromadb>=0.5.0",
+  "sentence-transformers>=2.7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["afterglow_robot*"]

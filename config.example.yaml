@@ -1,0 +1,15 @@
+wechat:
+  export_dir: "C:/Users/hyp/AppData/Roaming/wechat-data-analysis-desktop/output"
+  account_wxid: "wxid_your_account"
+  target_wxid: "wxid_target_contact"
+
+output:
+  base_dir: "data/outputs"
+
+dataset:
+  min_text_length: 4
+  fewshot_limit: 300
+
+embedding:
+  model_name: "BAAI/bge-small-zh-v1.5"
+  chroma_dir: "models/chroma_db"

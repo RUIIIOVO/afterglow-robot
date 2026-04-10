@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local outputs
+data/
+models/
+*.sqlite
+*.sqlite3
+*.db
+*.npy
+*.jsonl
+
+# Secrets and local configs
+config.yaml
+account_keys.json
+db_key.txt
+
+# Temporary files
+.tmp*
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
