@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.cli.commands import handle_chat, handle_ingest, handle_wechat_connect
+from src.installer.checks import DependencyStatus, check_environment
 from src.ingestion.contacts import discover_contacts
 from src.ingestion.discovery import resolve_account_wxid, select_parser
 from src.ingestion.normalize import extract_target_candidates
@@ -204,6 +205,16 @@ class Phase1MinimalTests(unittest.TestCase):
                     output = stdout.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("缺少依赖：Node.js", output)
+
+    def test_environment_check_includes_python(self) -> None:
+        with patch(
+            "src.installer.checks._check_python_status",
+            return_value=DependencyStatus(name="python", available=False, detail="未找到"),
+        ):
+            statuses = check_environment()
+        python_status = next(item for item in statuses if item.name == "python")
+        self.assertFalse(python_status.available)
+        self.assertEqual(python_status.detail, "未找到")
 
 
 if __name__ == "__main__":

@@ -7,3 +7,7 @@ dist/
 build/
 *.egg-info/
 logs/
+.venv/
+config/config.yaml
+data/
+models/

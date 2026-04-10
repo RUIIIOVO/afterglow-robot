@@ -67,11 +67,17 @@ class AppConfig:
     def config_dir(self) -> Path:
         return self.config_path.parent
 
+    @property
+    def workspace_dir(self) -> Path:
+        if self.config_dir.name.lower() == "config":
+            return self.config_dir.parent
+        return self.config_dir
+
     def resolve_path(self, value: str) -> Path:
         path = Path(value)
         if path.is_absolute():
             return path
-        return (self.config_dir / path).resolve()
+        return (self.workspace_dir / path).resolve()
 
 
 def _require(raw: dict[str, Any], path: str) -> Any:
@@ -145,4 +151,3 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigValidationError("conversation.history_limit 必须大于 0")
     if config.conversation.fewshot_limit <= 0:
         raise ConfigValidationError("conversation.fewshot_limit 必须大于 0")
-

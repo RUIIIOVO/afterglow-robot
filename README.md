@@ -174,9 +174,12 @@ afterglow-robot/
 │  ├─ persona/
 │  └─ vectorstore/
 ├─ scripts/
+│  ├─ install_python.ps1
+│  ├─ install_node.ps1
 │  ├─ install_ollama.ps1
 │  ├─ install_openclaw.ps1
-│  └─ bootstrap.ps1
+│  ├─ bootstrap.ps1
+│  └─ start.ps1
 ├─ src/
 │  ├─ installer/
 │  ├─ ingestion/
@@ -263,6 +266,27 @@ python -m src.cli.main ingest --config config/config.yaml
 python -m src.cli.main chat --config config/config.yaml --message "今天怎么样？"
 python -m src.cli.main wechat-connect --config config/config.yaml --check-only
 python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787
+```
+
+一键检查并启动（Windows PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start.ps1
+```
+
+说明：`start.ps1` 默认会自动安装缺失依赖（Python / Node.js / Ollama / OpenClaw），并在缺少 ingest 产物时自动执行 `ingest`。
+若配置里的 `wechat.export_dir` 当前不可用，`start.ps1` 会自动回退到 `tests/fixtures/single_account` 做本地演示跑通。
+
+指定监听地址与端口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start.ps1 -BindHost 127.0.0.1 -Port 8787
+```
+
+仅做检查不启动服务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start.ps1 -CheckOnly
 ```
 
 OpenClaw 安装命令（一期固定）：
