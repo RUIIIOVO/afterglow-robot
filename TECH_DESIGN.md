@@ -24,7 +24,8 @@
 → vectorstore 写入 Chroma
 → chat 用本地 Ollama 调试回复
 → wechat-connect 准备 OpenClaw 与微信扫码接入
-→ 微信文本消息进入本地回复链路
+→ serve 启动本地桥接服务
+→ 微信文本消息进入本地回复链路并回传文本回复
 ```
 
 ### 2.2 模块划分
@@ -172,6 +173,27 @@
 - 安装日志
 - 扫码准备说明
 
+### 3.5 `serve`
+用途：
+
+- 启动本地微信桥接服务
+- 接收 OpenClaw 文本事件
+- 调用现有 RAG + persona + Ollama 链路
+- 回传文本回复
+
+输入：
+
+- `--config`
+- `--host`
+- `--port`
+- `--once-file`（单次处理调试）
+
+输出：
+
+- HTTP 服务（`/health`、`/openclaw/event`）
+- 文本回复 payload
+- 桥接日志
+
 ## 4. 配置结构
 
 统一使用 `config.yaml`。
@@ -263,6 +285,23 @@ conversation:
 }
 ```
 
+### 5.4 微信桥接事件模型（最小实现）
+
+输入事件最小字段：
+
+- `conversation_id`
+- `sender_id`
+- `message_type`（一期仅支持 `text`）
+- `text`
+- `timestamp`
+
+输出事件最小字段：
+
+- `conversation_id`
+- `status`（`ok`/`error`）
+- `reply_text`（成功时）
+- `error.code`、`error.message`（失败时）
+
 ## 6. 处理规则
 
 ### 6.1 联系人与账号识别
@@ -331,6 +370,9 @@ persona prompt 必须包含：
 - 向量库未构建
 - `Ollama` 未启动
 - OpenClaw 未安装
+- OpenClaw 请求格式错误
+- OpenClaw 非文本消息
+- OpenClaw 回写失败
 
 错误输出要求：
 
@@ -387,6 +429,7 @@ afterglow-robot/
 
 - `ingest` 从导出目录生成全部文本产物
 - `chat` 调试命令返回文本
+- `serve` 接收文本事件并返回回复 payload
 - 缺少配置或依赖时的错误输出
 
 ### 9.3 安装链路测试

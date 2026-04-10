@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from src.cli.commands import handle_chat, handle_ingest, handle_init, handle_wechat_connect
+from src.cli.commands import handle_chat, handle_ingest, handle_init, handle_serve, handle_wechat_connect
 from src.runtime.runner import run_cli
 
 
@@ -34,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     wechat_parser.add_argument("--check-only", action="store_true")
     wechat_parser.set_defaults(handler=handle_wechat_connect)
 
+    serve_parser = subparsers.add_parser("serve", help="启动微信文本桥接服务")
+    serve_parser.add_argument("--config", default="config/config.yaml")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8787)
+    serve_parser.add_argument("--once-file")
+    serve_parser.set_defaults(handler=handle_serve)
+
     return parser
 
 
@@ -48,4 +55,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,0 +1,2 @@
+"""Wechat bridge package."""
+

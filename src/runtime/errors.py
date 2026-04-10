@@ -120,3 +120,39 @@ class OpenClawNotInstalledError(AfterglowError):
             code="OPENCLAW_NOT_INSTALLED",
             context={"details": details},
         )
+
+
+class OpenClawRequestFormatError(AfterglowError):
+    def __init__(self, details: str, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            user_message=f"OpenClaw 请求格式错误：{details}",
+            code="OPENCLAW_REQUEST_INVALID",
+            context=context or {},
+        )
+
+
+class NonTextMessageError(AfterglowError):
+    def __init__(self, message_type: str) -> None:
+        super().__init__(
+            user_message=f"暂不支持非文本消息：{message_type}",
+            code="NON_TEXT_EVENT",
+            context={"message_type": message_type},
+        )
+
+
+class ReplyGenerationError(AfterglowError):
+    def __init__(self, details: str, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            user_message=f"回复生成失败：{details}",
+            code="REPLY_GENERATION_FAILED",
+            context=context or {},
+        )
+
+
+class OpenClawWriteBackError(AfterglowError):
+    def __init__(self, details: str, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            user_message=f"OpenClaw 回写失败：{details}",
+            code="OPENCLAW_WRITEBACK_FAILED",
+            context=context or {},
+        )

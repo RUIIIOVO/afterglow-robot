@@ -1,0 +1,8 @@
+{
+  "conversation_id": "conv_demo",
+  "sender_id": "wxid_demo_user",
+  "message_type": "text",
+  "text": "你好，今天状态如何？",
+  "timestamp": 1710000000
+}
+

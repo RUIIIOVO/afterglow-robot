@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -22,10 +23,10 @@ from src.preprocess.pipeline import (
     clean_messages,
     ensure_non_empty,
 )
-from src.rag.prompt_builder import build_prompt, dump_debug_payload, parse_fewshots, parse_history, to_pretty_json
-from src.runtime.errors import ConfigValidationError, IngestArtifactsMissingError
-from src.runtime.ollama_client import OllamaClient
+from src.rag.prompt_builder import parse_history, to_pretty_json
+from src.runtime.chat_service import generate_chat_reply
 from src.vectorstore.chroma_store import ChromaVectorStore
+from src.wechat_bridge.server import WechatBridgeService, run_bridge_server
 
 OPENCLAW_INSTALL_CMD = "npx -y @tencent-weixin/openclaw-weixin-cli@latest install"
 
@@ -92,44 +93,21 @@ def handle_ingest(args: argparse.Namespace) -> int:
 
 def handle_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    output_base = config.resolve_path(config.output.base_dir)
-    message = (args.message or "").strip()
-    if not message:
-        raise ConfigValidationError("--message 不能为空")
-
-    persona_file = output_base / "persona_prompt.txt"
-    fewshot_file = output_base / "fewshot.json"
-    if not persona_file.exists():
-        raise IngestArtifactsMissingError(str(persona_file))
-    if not fewshot_file.exists():
-        raise IngestArtifactsMissingError(str(fewshot_file))
-    persona_prompt = persona_file.read_text(encoding="utf-8")
-    fewshots = parse_fewshots(read_json(fewshot_file), limit=config.conversation.fewshot_limit)
-
-    history: list[dict[str, str]] = []
+    history: object = []
     if args.history_file:
         history = parse_history(
             read_json(Path(args.history_file)),
             limit=config.conversation.history_limit,
         )
-
-    chroma_dir = config.resolve_path(config.embedding.chroma_dir)
-    vector_store = ChromaVectorStore(chroma_dir=chroma_dir, model_name=config.embedding.model_name)
-    rag_hits = vector_store.query(message, top_k=config.retrieval.top_k)
-    prompt = build_prompt(
-        persona_prompt=persona_prompt,
-        fewshots=fewshots,
-        rag_hits=rag_hits,
-        history=history,
-        user_message=message,
-    )
-    ollama = OllamaClient(config.llm)
-    ollama.check_health()
-    response = ollama.generate(prompt)
-    print(response)
+    result = generate_chat_reply(config=config, message=str(args.message or ""), history=history)
+    print(result.reply_text)
 
     if args.output:
-        payload = dump_debug_payload(prompt=prompt, rag_hits=rag_hits, response=response)
+        payload = {
+            "prompt": result.prompt,
+            "rag_hits": result.rag_hits,
+            "response": result.reply_text,
+        }
         Path(args.output).write_text(to_pretty_json(payload), encoding="utf-8")
     return 0
 
@@ -147,6 +125,24 @@ def handle_wechat_connect(args: argparse.Namespace) -> int:
         run_openclaw_install()
         print("OpenClaw 安装完成。")
     print("下一步：在微信侧按 OpenClaw 指引扫码接入。")
+    return 0
+
+
+def handle_serve(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    service = WechatBridgeService(config=config)
+    if args.once_file:
+        payload = read_json(Path(args.once_file))
+        result = service.process_payload(payload)
+        print(json.dumps(result.payload, ensure_ascii=False, indent=2))
+        return 0 if result.status_code < 400 else 1
+
+    host = str(args.host)
+    port = int(args.port)
+    print(f"微信桥接服务已启动：http://{host}:{port}")
+    print("健康检查：GET /health")
+    print("事件入口：POST /openclaw/event")
+    run_bridge_server(host=host, port=port, service=service)
     return 0
 
 

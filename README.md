@@ -131,7 +131,7 @@ RAG 方案固定为：
 - 目标微信号，例如某个联系人 `wxid_xxx`
 - 或输入 `self`，表示提取号主本人发送的全部文本消息
 
-## 7. 规划中的 CLI
+## 7. CLI 入口
 
 后续实现统一使用以下 4 个入口：
 
@@ -140,7 +140,11 @@ RAG 方案固定为：
 - `chat`：本地单轮文本调试
 - `wechat-connect`：安装或校验 OpenClaw 与微信连接准备
 
-这些命令已在当前仓库提供一期最小实现，详见第 12 节本地运行说明。
+为了完成微信文本聊天闭环，当前仓库额外提供：
+
+- `serve`：启动本地微信桥接服务，接收 OpenClaw 文本事件并回传文本回复
+
+其中 `wechat-connect` 负责安装/校验接入依赖，`serve` 才是实际收发消息服务。
 
 ## 8. 规划中的核心产物
 
@@ -214,6 +218,7 @@ afterglow-robot/
 - `ingest`
 - `chat`
 - `wechat-connect`
+- `serve`
 
 ### 12.1 安装依赖
 
@@ -257,6 +262,7 @@ python -m src.cli.main init --config config/config.yaml
 python -m src.cli.main ingest --config config/config.yaml
 python -m src.cli.main chat --config config/config.yaml --message "今天怎么样？"
 python -m src.cli.main wechat-connect --config config/config.yaml --check-only
+python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787
 ```
 
 OpenClaw 安装命令（一期固定）：
@@ -265,7 +271,21 @@ OpenClaw 安装命令（一期固定）：
 npx -y @tencent-weixin/openclaw-weixin-cli@latest install
 ```
 
-### 12.5 测试
+桥接服务单次调试（不常驻）：
+
+```bash
+python -m src.cli.main serve --config config/config.yaml --once-file tests/fixtures/bridge_event.json
+```
+
+### 12.5 从 ingest 到微信聊天最小跑通步骤
+
+1. 生成语料与向量库：`python -m src.cli.main ingest --config config/config.yaml`
+2. 检查或安装 OpenClaw：`python -m src.cli.main wechat-connect --config config/config.yaml`
+3. 启动本地桥接服务：`python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787`
+4. 将 OpenClaw 回调指向本地服务：`POST /openclaw/event`
+5. 微信发来文本消息后，服务调用现有 `RAG + persona + Ollama` 链路并回传文本回复
+
+### 12.6 测试
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v

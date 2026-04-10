@@ -16,6 +16,7 @@ from src.ingestion.normalize import extract_target_candidates
 from src.preprocess.pipeline import clean_messages
 from src.runtime.errors import AccountDetectionError, DependencyMissingError
 from src.runtime.runner import run_cli
+from src.runtime.chat_service import ChatReplyResult
 
 
 class _FakeVectorStore:
@@ -167,23 +168,17 @@ class Phase1MinimalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
             config_path = self._write_config(workdir=workdir, export_dir=self.single_export_dir, target_wxid="wxid_target")
-            output_dir = workdir / "output"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "persona_prompt.txt").write_text("你是聊天助手", encoding="utf-8")
-            (output_dir / "fewshot.json").write_text('[{"context":"你好","response":"你好呀"}]', encoding="utf-8")
-
             args = Namespace(
                 config=str(config_path),
                 message="晚上吃什么",
                 history_file=None,
                 output=None,
             )
-            with patch("src.cli.commands.ChromaVectorStore", _FakeVectorStore):
-                with patch("src.cli.commands.OllamaClient.check_health", return_value=None):
-                    with patch("src.cli.commands.OllamaClient.generate", return_value="测试回复"):
-                        with io.StringIO() as stdout, redirect_stdout(stdout):
-                            code = handle_chat(args)
-                            output = stdout.getvalue()
+            fake_reply = ChatReplyResult(reply_text="测试回复", prompt="p", rag_hits=[])
+            with patch("src.cli.commands.generate_chat_reply", return_value=fake_reply):
+                with io.StringIO() as stdout, redirect_stdout(stdout):
+                    code = handle_chat(args)
+                    output = stdout.getvalue()
             self.assertEqual(code, 0)
             self.assertIn("测试回复", output)
 
@@ -213,4 +208,3 @@ class Phase1MinimalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
