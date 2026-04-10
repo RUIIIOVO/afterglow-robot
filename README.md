@@ -326,27 +326,85 @@ python "process/run_text_pipeline.py" --config "config.yaml"
 wechat:
   target_wxid: "wxid_xxx"
   export_dir: "C:/Users/hyp/AppData/Roaming/wechat-data-analysis-desktop/output"
+  account_wxid: "wxid_your_account"
+
+output:
+  base_dir: "data/outputs"
 
 llm:
-  provider: "ollama"
-  model: "qwen2.5:7b"
   endpoint: "http://localhost:11434"
+  model: "qwen2.5:7b"
+  temperature: 0.7
+  timeout_seconds: 120
 
 retrieval:
   chroma_dir: "models/chroma_db"
   top_k: 5
 
-voice:
-  provider: "gpt-sovits"
-  weights_dir: "models/sovits_weights"
-  processed_dir: "data/voice_processed"
+conversation:
+  history_limit: 10
+  fewshot_limit: 20
 
-emoji:
-  vector_file: "models/emoji_vectors.npy"
-  metadata_db: "models/emoji_metadata.sqlite"
+dataset:
+  min_text_length: 4
+  fewshot_limit: 300
+
+embedding:
+  model_name: "BAAI/bge-small-zh-v1.5"
+  chroma_dir: "models/chroma_db"
 ```
 
 > 以上仅为 README 中的配置约定示例，用于说明关键参数含义；不代表仓库当前已经完整实现这些字段的解析逻辑。
+
+### 5.1 生成第二阶段单轮文本回复
+
+第二阶段已经提供最小可用的本地文本回复链路：`RAG 检索 + Prompt 组装 + Ollama 生成`。
+
+先确保：
+
+- 第一阶段已经跑通，至少存在 `fewshot.json`、`rag_corpus.jsonl` 和 `models/chroma_db/`
+- 本地 `Ollama` 已启动，并且已经拉取对应模型
+
+最小调用示例：
+
+```bash
+python "agent/generate_reply.py" `
+  --config "config.yaml" `
+  --message "今晚回来吃饭吗"
+```
+
+如果你希望把最近对话窗口也带入生成链路，可以先准备一个历史文件，例如 `history.json`：
+
+```json
+[
+  { "role": "user", "text": "你到哪了" },
+  { "role": "assistant", "text": "马上到" }
+]
+```
+
+然后这样调用：
+
+```bash
+python "agent/generate_reply.py" `
+  --config "config.yaml" `
+  --message "今晚回来吃饭吗" `
+  --history-file "history.json" `
+  --output "data/outputs/wxid_target_contact/reply.debug.json"
+```
+
+命令会：
+
+- 从 `fewshot.json` 读取风格样本
+- 从 `models/chroma_db/` 检索相关历史表达
+- 拼接最近对话窗口
+- 调用本地 `Ollama` 输出单轮回复
+
+如果指定 `--output`，会额外落盘调试信息，包括：
+
+- `reply`
+- `rag_records`
+- `system_prompt`
+- `user_prompt`
 
 ### 6. 接入微信私聊
 
@@ -362,6 +420,9 @@ emoji:
 
 ```text
 afterglow-robot/
+├── agent/
+│   ├── __init__.py
+│   └── generate_reply.py   # 二阶段单轮文本回复 CLI
 ├── data/
 │   ├── raw/                # 原始解密后的 DB 文件（不入 git）
 │   ├── voice_raw/          # 原始 SILK 语音文件
@@ -371,18 +432,15 @@ afterglow-robot/
 ├── process/
 │   ├── extract_chat.py     # 按 wxid 筛选聊天记录
 │   ├── build_dataset.py    # 构造 Few-shot 样本集与向量库
-│   ├── voice_preprocess.py # SILK 转换、降噪与切分
-│   └── build_emoji_db.py   # 表情包 CLIP 向量化
-├── models/
-│   ├── chroma_db/          # ChromaDB 向量库
-│   ├── emoji_vectors.npy   # 表情向量
-│   └── sovits_weights/     # GPT-SoVITS 模型权重
-├── agent/
-│   ├── echosoul_skill.py   # OpenClaw Skill 入口
-│   ├── llm_client.py       # Ollama API 调用封装
-│   ├── rag_retriever.py    # ChromaDB 检索
-│   ├── tts_client.py       # TTS 调用
-│   └── emoji_retriever.py  # 表情包检索
+│   ├── discover_contacts.py
+│   └── run_text_pipeline.py
+├── afterglow_robot/
+│   ├── config.py           # 配置加载
+│   ├── wechat_export.py    # SQLite 提取逻辑
+│   ├── dataset_builder.py  # Few-shot / RAG 构建
+│   ├── rag_retriever.py    # 二阶段检索逻辑
+│   ├── llm_client.py       # Ollama API 封装
+│   └── reply_generator.py  # 回复生成逻辑
 ├── config.yaml
 └── README.md
 ```
@@ -416,6 +474,7 @@ afterglow-robot/
 
 - [x] 完成聊天导出与 Few-shot 数据集构造脚本
 - [x] 完成 `ChromaDB` 向量检索链路
+- [x] 完成本地 `Ollama` 文本回复最小链路
 - [ ] 完成 `EchoSoul Skill` 与 `Ollama` 的联调
 - [ ] 完成表情向量索引与排序策略
 - [ ] 完成语音预处理与 TTS 接口接入

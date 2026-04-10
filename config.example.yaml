@@ -13,3 +13,17 @@ dataset:
 embedding:
   model_name: "BAAI/bge-small-zh-v1.5"
   chroma_dir: "models/chroma_db"
+
+retrieval:
+  chroma_dir: "models/chroma_db"
+  top_k: 5
+
+llm:
+  endpoint: "http://localhost:11434"
+  model: "qwen2.5:7b"
+  temperature: 0.7
+  timeout_seconds: 120
+
+conversation:
+  history_limit: 10
+  fewshot_limit: 20
