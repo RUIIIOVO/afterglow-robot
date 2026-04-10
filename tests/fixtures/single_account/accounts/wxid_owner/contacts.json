@@ -1,0 +1,11 @@
+[
+  {
+    "wxid": "wxid_target",
+    "display_name": "目标联系人"
+  },
+  {
+    "wxid": "wxid_friend",
+    "display_name": "朋友"
+  }
+]
+

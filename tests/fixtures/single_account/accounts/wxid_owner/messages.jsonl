@@ -1,0 +1,11 @@
+{"message_id":"m1","timestamp":1710000001,"sender_wxid":"wxid_owner","conversation_id":"conv_target","message_type":"text","text":"今天加班"}
+{"message_id":"m2","timestamp":1710000002,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":"辛苦了早点休息"}
+{"message_id":"m3","timestamp":1710000003,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"image","text":"[图片]"}
+{"message_id":"m4","timestamp":1710000004,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":""}
+{"message_id":"m5","timestamp":1710000005,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":"嗯"}
+{"message_id":"m6","timestamp":1710000006,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":"系统通知","is_system":true}
+{"message_id":"m7","timestamp":1710000007,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":"晚点给你回电话"}
+{"message_id":"m8","timestamp":1710000008,"sender_wxid":"wxid_friend","conversation_id":"conv_friend","message_type":"text","text":"周末打球吗"}
+{"message_id":"m9","timestamp":1710000009,"sender_wxid":"wxid_target","conversation_id":"conv_target","message_type":"text","text":"我到家了，准备洗澡了"}
+{"message_id":"m10","timestamp":1710000010,"sender_wxid":"wxid_owner","conversation_id":"conv_target","message_type":"text","text":"收到啦"}
+

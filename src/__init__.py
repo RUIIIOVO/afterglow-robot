@@ -1,0 +1,2 @@
+"""Afterglow Robot."""
+

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afterglow-robot"
+version = "0.1.0"
+description = "Afterglow Robot phase-1 local text pipeline"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "chromadb>=0.5.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
