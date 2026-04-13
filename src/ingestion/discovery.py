@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.ingestion.parsers.base import ExportParser
 from src.ingestion.parsers.minimal_v1 import MinimalV1Parser
+from src.ingestion.parsers.wechat_data_analysis_v1 import WeChatDataAnalysisV1Parser
 from src.runtime.errors import (
     AccountDetectionError,
     ExportDirNotFoundError,
@@ -11,7 +12,10 @@ from src.runtime.errors import (
 )
 
 
-_PARSERS: list[ExportParser] = [MinimalV1Parser()]
+_PARSERS: list[ExportParser] = [
+    MinimalV1Parser(),
+    WeChatDataAnalysisV1Parser(),
+]
 
 
 def select_parser(export_dir: Path) -> ExportParser:
@@ -20,7 +24,11 @@ def select_parser(export_dir: Path) -> ExportParser:
     for parser in _PARSERS:
         if parser.can_parse(export_dir):
             return parser
-    raise ExportFormatError(str(export_dir), "未匹配到已支持的导出结构")
+    supported = ", ".join(parser.name for parser in _PARSERS)
+    raise ExportFormatError(
+        str(export_dir),
+        f"未匹配到已支持的导出结构。当前支持：{supported}",
+    )
 
 
 def resolve_account_wxid(
@@ -47,4 +55,3 @@ def resolve_account_wxid(
         "多账号但未指定 account_wxid，请在配置中填写 wechat.account_wxid。",
         context={"available_accounts": accounts},
     )
-

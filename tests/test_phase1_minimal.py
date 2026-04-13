@@ -7,6 +7,7 @@ import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.cli.commands import handle_chat, handle_ingest, handle_wechat_connect
@@ -210,13 +211,18 @@ class Phase1MinimalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
             config_path = self._write_config(workdir=workdir, export_dir=self.single_export_dir)
-            args = Namespace(config=str(config_path), check_only=False)
+            args = Namespace(config=str(config_path), check_only=False, bridge_url="http://127.0.0.1:8787/openclaw/event")
             with patch("src.cli.commands.run_openclaw_install", return_value=None) as install_mock:
-                with io.StringIO() as stdout, redirect_stdout(stdout):
-                    code = handle_wechat_connect(args)
-                    output = stdout.getvalue()
+                with patch(
+                    "src.cli.commands.configure_openclaw_afterglow",
+                    return_value=SimpleNamespace(applied=True, schema_changed=True, process_changed=False, config_changed=True),
+                ) as patch_mock:
+                    with io.StringIO() as stdout, redirect_stdout(stdout):
+                        code = handle_wechat_connect(args)
+                        output = stdout.getvalue()
             self.assertEqual(code, 0)
             install_mock.assert_called_once()
+            patch_mock.assert_called_once()
             self.assertIn("触发扫码流程", output)
 
     def test_environment_check_includes_python(self) -> None:

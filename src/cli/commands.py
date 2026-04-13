@@ -26,6 +26,7 @@ from src.preprocess.pipeline import (
 from src.rag.prompt_builder import parse_history, to_pretty_json
 from src.runtime.chat_service import generate_chat_reply
 from src.vectorstore.chroma_store import ChromaVectorStore
+from src.wechat_bridge.openclaw_integration import configure_openclaw_afterglow
 from src.wechat_bridge.server import WechatBridgeService, run_bridge_server
 
 OPENCLAW_INSTALL_CMD = "npx -y @tencent-weixin/openclaw-weixin-cli@latest install"
@@ -114,16 +115,37 @@ def handle_chat(args: argparse.Namespace) -> int:
 
 def handle_wechat_connect(args: argparse.Namespace) -> int:
     load_config(args.config)
+    bridge_url = str(getattr(args, "bridge_url", "http://127.0.0.1:8787/openclaw/event"))
+    timeout_ms = int(getattr(args, "bridge_timeout_ms", 120000))
+    openclaw_root = getattr(args, "openclaw_root", None)
+    skip_bridge_patch = bool(getattr(args, "skip_bridge_patch", False))
     print(f"OpenClaw 安装命令：{OPENCLAW_INSTALL_CMD}")
     if args.check_only:
         ensure_openclaw_installed()
         print("OpenClaw 检测通过。")
+        if not skip_bridge_patch:
+            print(f"桥接目标地址：{bridge_url}")
         print("下一步：在微信侧按 OpenClaw 指引扫码接入。")
         return 0
 
     print("开始执行 OpenClaw 安装命令（将触发扫码流程）...")
     run_openclaw_install()
     print("OpenClaw 安装命令执行完成。")
+    if not skip_bridge_patch:
+        result = configure_openclaw_afterglow(
+            bridge_url=bridge_url,
+            timeout_ms=timeout_ms,
+            openclaw_root=openclaw_root,
+            strict=False,
+        )
+        if result.applied:
+            print(
+                "桥接补丁已完成："
+                f"schema={result.schema_changed}, process={result.process_changed}, config={result.config_changed}"
+            )
+        else:
+            print("桥接补丁暂未执行：未检测到可补丁的 openclaw-weixin 安装目录。")
+            print(f"请在扫码安装完成后重试：python -m src.cli.main wechat-connect --config {args.config}")
     print("下一步：在微信侧按 OpenClaw 指引扫码接入。")
     return 0
 

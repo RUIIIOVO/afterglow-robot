@@ -10,6 +10,7 @@ from src.common.config import AppConfig
 from src.runtime.chat_service import generate_chat_reply
 from src.runtime.errors import AfterglowError, ReplyGenerationError
 from src.wechat_bridge.adapter import OpenClawAdapter
+from src.wechat_bridge.history_store import ConversationHistoryEntry, ConversationHistoryStore
 from src.wechat_bridge.models import BridgeProcessResult
 
 
@@ -32,17 +33,24 @@ class WechatBridgeService:
         config: AppConfig,
         adapter: OpenClawAdapter | None = None,
         logger: logging.Logger | None = None,
+        history_store: ConversationHistoryStore | None = None,
     ) -> None:
         self.config = config
         self.adapter = adapter or OpenClawAdapter()
         self.logger = logger or setup_bridge_logger(Path("logs/wechat_bridge.log").resolve())
+        history_dir = self.config.resolve_path(self.config.output.base_dir) / "bridge_history"
+        self.history_store = history_store or ConversationHistoryStore(history_dir)
 
     def process_payload(self, payload: object) -> BridgeProcessResult:
         conversation_id = "unknown"
         try:
             event = self.adapter.parse_event(payload)
             conversation_id = event.conversation_id
-            reply = generate_chat_reply(config=self.config, message=event.text, history=[])
+            history = self.history_store.load_history(
+                conversation_id=event.conversation_id,
+                limit=self.config.conversation.history_limit,
+            )
+            reply = generate_chat_reply(config=self.config, message=event.text, history=history)
             response_payload = self.adapter.build_success_payload(event=event, reply_text=reply.reply_text)
             if event.reply_url:
                 self.adapter.push_reply(
@@ -50,6 +58,25 @@ class WechatBridgeService:
                     payload=response_payload,
                     timeout_seconds=self.config.llm.timeout_seconds,
                 )
+            self.history_store.append_entries(
+                conversation_id=event.conversation_id,
+                entries=[
+                    ConversationHistoryEntry(
+                        role="user",
+                        content=event.text,
+                        timestamp=event.timestamp,
+                        sender_id=event.sender_id,
+                        event_id=event.event_id,
+                    ),
+                    ConversationHistoryEntry(
+                        role="assistant",
+                        content=reply.reply_text,
+                        timestamp=event.timestamp,
+                        sender_id="afterglow",
+                        event_id=event.event_id,
+                    ),
+                ],
+            )
             self.logger.info(
                 "bridge_ok conversation_id=%s sender_id=%s text_len=%s",
                 event.conversation_id,
@@ -153,4 +180,3 @@ def run_bridge_server(
     finally:
         httpd.server_close()
         service.logger.info("bridge_server_stop")
-

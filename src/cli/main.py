@@ -32,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     wechat_parser = subparsers.add_parser("wechat-connect", help="OpenClaw 接入前检查与安装")
     wechat_parser.add_argument("--config", default="config/config.yaml")
     wechat_parser.add_argument("--check-only", action="store_true")
+    wechat_parser.add_argument("--bridge-url", default="http://127.0.0.1:8787/openclaw/event")
+    wechat_parser.add_argument("--bridge-timeout-ms", type=int, default=120000)
+    wechat_parser.add_argument("--openclaw-root")
+    wechat_parser.add_argument("--skip-bridge-patch", action="store_true")
     wechat_parser.set_defaults(handler=handle_wechat_connect)
 
     serve_parser = subparsers.add_parser("serve", help="启动微信文本桥接服务")

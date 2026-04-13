@@ -122,6 +122,15 @@ class OpenClawNotInstalledError(AfterglowError):
         )
 
 
+class OpenClawPatchError(AfterglowError):
+    def __init__(self, details: str, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            user_message=f"OpenClaw 桥接配置失败：{details}",
+            code="OPENCLAW_PATCH_FAILED",
+            context=context or {},
+        )
+
+
 class OpenClawRequestFormatError(AfterglowError):
     def __init__(self, details: str, context: dict[str, Any] | None = None) -> None:
         super().__init__(

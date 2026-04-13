@@ -20,31 +20,44 @@ class OpenClawAdapter:
             payload.get("session_id"),
             payload.get("chat_id"),
             self._nested(payload, "conversation", "id"),
+            self._nested(payload, "message", "session_id"),
+            self._nested(payload, "message", "chat_id"),
         )
         sender_id = self._pick_text(
             payload.get("sender_id"),
             payload.get("from_wxid"),
             payload.get("from"),
             self._nested(payload, "sender", "id"),
+            self._nested(payload, "message", "from_user_id"),
+            self._nested(payload, "message", "sender_username"),
         )
         message_type = self._pick_text(
             payload.get("message_type"),
             self._nested(payload, "message", "type"),
+            self._nested(payload, "message", "renderType"),
         ) or "text"
+        normalized_message_type = self._normalize_message_type(message_type)
         text = self._pick_text(
             payload.get("text"),
             payload.get("content"),
             self._nested(payload, "message", "text"),
             self._nested(payload, "message", "content"),
+            self._nested(payload, "message", "text_body"),
+            self._nested(payload, "message", "body"),
         )
         timestamp_raw = (
             payload.get("timestamp")
             or payload.get("ts")
             or payload.get("time")
+            or self._nested(payload, "message", "create_time_ms")
             or time.time()
         )
         event_id = self._pick_text(payload.get("event_id"), payload.get("id")) or ""
-        reply_url = self._pick_text(payload.get("reply_url"), self._nested(payload, "reply", "url"))
+        reply_url = self._pick_text(
+            payload.get("reply_url"),
+            self._nested(payload, "reply", "url"),
+            self._nested(payload, "callback", "url"),
+        )
 
         if not conversation_id and sender_id:
             conversation_id = sender_id
@@ -53,7 +66,7 @@ class OpenClawAdapter:
             raise OpenClawRequestFormatError("缺少 conversation_id/session_id。", context={"payload_keys": list(payload.keys())})
         if not sender_id:
             raise OpenClawRequestFormatError("缺少 sender_id/from_wxid。", context={"payload_keys": list(payload.keys())})
-        if message_type.lower() != "text":
+        if normalized_message_type != "text":
             raise NonTextMessageError(message_type=message_type)
         if not text:
             raise OpenClawRequestFormatError("文本消息内容为空。", context={"conversation_id": conversation_id})
@@ -64,13 +77,15 @@ class OpenClawAdapter:
                 "timestamp 非法。",
                 context={"timestamp": timestamp_raw},
             ) from error
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
 
         return BridgeInboundEvent(
             conversation_id=conversation_id,
             sender_id=sender_id,
             text=text,
             timestamp=timestamp,
-            message_type="text",
+            message_type=normalized_message_type,
             event_id=event_id,
             reply_url=reply_url,
         )
@@ -127,3 +142,10 @@ class OpenClawAdapter:
             if text:
                 return text
         return ""
+
+    @staticmethod
+    def _normalize_message_type(message_type: str) -> str:
+        normalized = str(message_type or "").strip().lower()
+        if normalized in {"", "1", "text"}:
+            return "text"
+        return normalized

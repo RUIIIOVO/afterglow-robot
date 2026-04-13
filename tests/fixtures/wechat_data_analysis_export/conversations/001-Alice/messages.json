@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "account": "wxid_owner_real",
+  "conversation": {
+    "username": "wxid_target_real",
+    "displayName": "Alice",
+    "isGroup": false
+  },
+  "messages": [
+    {
+      "id": "json-1",
+      "createTime": 1710000000,
+      "renderType": "text",
+      "isSent": false,
+      "senderUsername": "wxid_target_real",
+      "senderDisplayName": "Alice",
+      "conversationUsername": "wxid_target_real",
+      "content": "你好呀，今晚有空吗"
+    },
+    {
+      "id": "json-2",
+      "createTime": 1710000001,
+      "renderType": "text",
+      "isSent": true,
+      "senderUsername": "wxid_owner_real",
+      "conversationUsername": "wxid_target_real",
+      "content": "在的，怎么啦"
+    },
+    {
+      "id": "json-3",
+      "createTime": 1710000002,
+      "renderType": "system",
+      "isSent": false,
+      "senderUsername": "",
+      "conversationUsername": "wxid_target_real",
+      "content": "你已添加了 Alice，现在可以开始聊天了"
+    }
+  ]
+}

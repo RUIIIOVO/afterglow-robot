@@ -13,7 +13,10 @@ from src.cli.commands import handle_serve
 from src.runtime.chat_service import ChatReplyResult
 from src.runtime.errors import OpenClawWriteBackError, VectorStoreNotBuiltError
 from src.wechat_bridge.adapter import OpenClawAdapter
+from src.wechat_bridge.history_store import ConversationHistoryEntry
+from src.wechat_bridge.history_store import ConversationHistoryStore
 from src.wechat_bridge.models import BridgeProcessResult
+from src.wechat_bridge.openclaw_integration import configure_openclaw_afterglow
 from src.wechat_bridge.server import WechatBridgeService
 
 
@@ -89,6 +92,53 @@ class WechatBridgeTests(unittest.TestCase):
         event = adapter.parse_event(payload)
         self.assertEqual(event.conversation_id, "wxid_sender")
         self.assertEqual(event.sender_id, "wxid_sender")
+
+    def test_adapter_supports_nested_message_payload(self) -> None:
+        adapter = OpenClawAdapter()
+        payload = {
+            "message": {
+                "session_id": "conv_nested",
+                "from_user_id": "wxid_nested",
+                "renderType": "text",
+                "text_body": "来自嵌套结构",
+                "create_time_ms": 1710002233000,
+            }
+        }
+        event = adapter.parse_event(payload)
+        self.assertEqual(event.conversation_id, "conv_nested")
+        self.assertEqual(event.sender_id, "wxid_nested")
+        self.assertEqual(event.text, "来自嵌套结构")
+        self.assertEqual(event.timestamp, 1710002233)
+
+    def test_adapter_treats_numeric_render_type_as_text(self) -> None:
+        adapter = OpenClawAdapter()
+        payload = {
+            "message": {
+                "session_id": "conv_numeric",
+                "from_user_id": "wxid_numeric",
+                "renderType": "1",
+                "content": "数值类型文本",
+                "create_time_ms": 1710002234000,
+            }
+        }
+        event = adapter.parse_event(payload)
+        self.assertEqual(event.message_type, "text")
+        self.assertEqual(event.text, "数值类型文本")
+
+    def test_adapter_treats_integer_render_type_as_text(self) -> None:
+        adapter = OpenClawAdapter()
+        payload = {
+            "message": {
+                "session_id": "conv_numeric_int",
+                "from_user_id": "wxid_numeric_int",
+                "renderType": 1,
+                "content": "整型文本事件",
+                "create_time_ms": 1710002235000,
+            }
+        }
+        event = adapter.parse_event(payload)
+        self.assertEqual(event.message_type, "text")
+        self.assertEqual(event.text, "整型文本事件")
 
     def test_bridge_calls_reply_chain_on_text_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,6 +246,90 @@ class WechatBridgeTests(unittest.TestCase):
             self.assertEqual(result.payload["conversation_id"], "conv_05")
             self.assertEqual(result.payload["reply_text"], "晴天")
 
+    def test_bridge_persists_history_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config = self._write_config(workdir)
+            from src.common.config import load_config
+
+            history_store = ConversationHistoryStore(workdir / "history")
+            service = WechatBridgeService(config=load_config(config), history_store=history_store)
+            payload = {
+                "conversation_id": "conv_history",
+                "sender_id": "wxid_u",
+                "message_type": "text",
+                "text": "第一句",
+                "timestamp": 1710002111,
+                "event_id": "evt-1",
+            }
+            with patch(
+                "src.wechat_bridge.server.generate_chat_reply",
+                return_value=ChatReplyResult(reply_text="第一句回复", prompt="p", rag_hits=[]),
+            ):
+                result = service.process_payload(payload)
+            self.assertEqual(result.status_code, 200)
+            history = history_store.load_history("conv_history", limit=10)
+            self.assertEqual(
+                history,
+                [
+                    {"role": "user", "content": "第一句"},
+                    {"role": "assistant", "content": "第一句回复"},
+                ],
+            )
+
+    def test_bridge_uses_persisted_history_on_next_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config = self._write_config(workdir)
+            from src.common.config import load_config
+
+            history_store = ConversationHistoryStore(workdir / "history")
+            service = WechatBridgeService(config=load_config(config), history_store=history_store)
+            history_store.append_entries(
+                "conv_history_2",
+                [
+                    ConversationHistoryEntry(role="user", content="上一句", timestamp=1710002201, sender_id="wxid_u"),
+                    ConversationHistoryEntry(role="assistant", content="上一句回复", timestamp=1710002202, sender_id="afterglow"),
+                ],
+            )
+            history_file = next((workdir / "history").glob("conv_history_2.*.jsonl"))
+            with history_file.open("a", encoding="utf-8", newline="\n") as file:
+                file.write("{bad json}\n")
+
+            payload = {
+                "conversation_id": "conv_history_2",
+                "sender_id": "wxid_u",
+                "message_type": "text",
+                "text": "下一句",
+                "timestamp": 1710002203,
+                "event_id": "evt-2",
+            }
+
+            def _fake_generate_chat_reply(*, config, message, history):
+                self.assertEqual(message, "下一句")
+                self.assertEqual(
+                    history,
+                    [
+                        {"role": "user", "content": "上一句"},
+                        {"role": "assistant", "content": "上一句回复"},
+                    ],
+                )
+                return ChatReplyResult(reply_text="下一句回复", prompt="p", rag_hits=[])
+
+            with patch("src.wechat_bridge.server.generate_chat_reply", side_effect=_fake_generate_chat_reply):
+                result = service.process_payload(payload)
+
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(
+                history_store.load_history("conv_history_2", limit=10),
+                [
+                    {"role": "user", "content": "上一句"},
+                    {"role": "assistant", "content": "上一句回复"},
+                    {"role": "user", "content": "下一句"},
+                    {"role": "assistant", "content": "下一句回复"},
+                ],
+            )
+
     def test_bridge_distinguishes_writeback_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
@@ -222,6 +356,84 @@ class WechatBridgeTests(unittest.TestCase):
                     result = service.process_payload(payload)
             self.assertEqual(result.status_code, 502)
             self.assertEqual(result.payload["error"]["code"], "OPENCLAW_WRITEBACK_FAILED")
+
+    def test_configure_openclaw_afterglow_patches_supported_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "extensions" / "openclaw-weixin" / "src" / "config" / "config-schema.ts"
+            process_path = root / "extensions" / "openclaw-weixin" / "src" / "messaging" / "process-message.ts"
+            config_path = root / "openclaw.json"
+            schema_path.parent.mkdir(parents=True, exist_ok=True)
+            process_path.parent.mkdir(parents=True, exist_ok=True)
+
+            schema_path.write_text(
+                "\n".join(
+                    [
+                        "const weixinAccountSchema = z.object({",
+                        "  name: z.string().optional(),",
+                        "  enabled: z.boolean().optional(),",
+                        "  baseUrl: z.string().default(DEFAULT_BASE_URL),",
+                        "  cdnBaseUrl: z.string().default(CDN_BASE_URL),",
+                        "  routeTag: z.number().optional(),",
+                        "});",
+                        "",
+                        "/** Top-level weixin config schema (token is stored in credentials file, not config). */",
+                        "export const WeixinConfigSchema = weixinAccountSchema.extend({",
+                        "  accounts: z.record(z.string(), weixinAccountSchema).optional(),",
+                        "  /** ISO 8601; bumped on each successful login to refresh gateway config from disk. */",
+                        "  channelConfigUpdatedAt: z.string().optional(),",
+                        "});",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            process_path.write_text(
+                "\n".join(
+                    [
+                        'const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");',
+                        "",
+                        "function demo() {",
+                        "  if (debug) {",
+                        '    debugTrace.push(',
+                        '      "── 鉴权 & 路由 ──",',
+                        '      `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,',
+                        "    );",
+                        "  }",
+                        "",
+                        "    const response = await fetch(params.config.bridgeUrl, {",
+                        '      body: JSON.stringify({',
+                        '        conversation_id: params.message.session_id ?? params.message.from_user_id ?? "",',
+                        '        session_id: params.message.session_id ?? "",',
+                        '        sender_id: params.message.from_user_id ?? "",',
+                        '        message_type: "text",',
+                        '        text: params.text,',
+                        '        timestamp: params.message.create_time_ms ?? Date.now(),',
+                        '        event_id: String(params.message.message_id ?? ""),',
+                        '        account_id: params.accountId,',
+                        '        channel: "openclaw-weixin",',
+                        "      }),",
+                        "    });",
+                        "  }",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config_path.write_text('{"plugins":{"allow":[]},"channels":{},"session":{}}', encoding="utf-8")
+
+            result = configure_openclaw_afterglow(
+                bridge_url="http://127.0.0.1:8787/openclaw/event",
+                timeout_ms=90000,
+                openclaw_root=root,
+                strict=True,
+            )
+            self.assertTrue(result.applied)
+            self.assertTrue(result.changed)
+            self.assertIn("afterglow", schema_path.read_text(encoding="utf-8"))
+            self.assertIn("resolveAfterglowBridgeConfig", process_path.read_text(encoding="utf-8"))
+            self.assertIn('"bridgeUrl": "http://127.0.0.1:8787/openclaw/event"', config_path.read_text(encoding="utf-8"))
 
     def test_cli_serve_once_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

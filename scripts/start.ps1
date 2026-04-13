@@ -450,13 +450,13 @@ try {
   $initCommand += @("-m", "src.cli.main", "init", "--config", $configPath.Path)
   Invoke-CheckedCommand -Command $initCommand
 
-  Write-Host "[2/4] Run wechat-connect (install/check OpenClaw)..."
+  $bridgeUrl = "http://$($BindHost):$Port/openclaw/event"
+
+  Write-Host "[2/4] Run wechat-connect (install/check OpenClaw + bridge patch)..."
   $wechatCommand = @()
   $wechatCommand += @($pythonCmd)
-  $wechatCommand += @("-m", "src.cli.main", "wechat-connect", "--config", $configPath.Path)
+  $wechatCommand += @("-m", "src.cli.main", "wechat-connect", "--config", $configPath.Path, "--bridge-url", $bridgeUrl)
   Invoke-CheckedCommand -Command $wechatCommand
-
-  Invoke-AfterglowWeixinPatch -PythonCommand $pythonCmd -BridgeUrl "http://$($BindHost):$Port/openclaw/event"
 
   Write-Host "[3/4] Validate ingest artifacts..."
   $artifactCheckCode = Test-IngestArtifacts -PythonCommand $pythonCmd -ConfigPath $configPath.Path

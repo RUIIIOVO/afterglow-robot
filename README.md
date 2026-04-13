@@ -246,9 +246,18 @@ copy config/config.example.yaml config/config.yaml
 - `wechat.account_wxid`（多账号必填）
 - `wechat.target_wxid`
 
-### 12.3 当前支持的最小导出目录结构
+当前配置校验会额外检查：
 
-为保证可测试与可替换解析器，一期先支持：
+- `wechat.export_dir`、`wechat.target_wxid`、`output.base_dir`、`embedding.*` 不允许为空；
+- `llm.endpoint` 必须是合法 `http/https` URL；
+- `llm.temperature` 必须在 `0-2`；
+- 所有数量与超时字段必须大于 `0`。
+
+### 12.3 当前支持的导出结构与兼容策略
+
+当前同时支持两类输入：
+
+1. 测试用最小结构 `minimal_v1`
 
 ```text
 <wechat_export_dir>/
@@ -258,13 +267,44 @@ copy config/config.example.yaml config/config.yaml
       └─ messages.jsonl
 ```
 
+2. `WeChatDataAnalysis` 真实导出产物（推荐）
+
+- 解压目录：
+
+```text
+<wechat_export_dir>/
+├─ manifest.json
+└─ conversations/
+   └─ <conversation>/
+      ├─ meta.json
+      ├─ messages.json
+      └─ messages.txt
+```
+
+- 或直接传入单个导出 ZIP 文件路径：
+
+```text
+<wechat_export_zip>.zip
+```
+
+当前兼容策略如下：
+
+- 优先支持 `messages.json`，保留 `minimal_v1` 向后兼容；
+- `messages.txt` 走 best-effort 解析，主要覆盖文本与系统消息；
+- 若 `schemaVersion` 缺失，按 v1 处理；
+- 若导出启用了 `privacy mode`，通常会隐藏 `account` / `username`，当前不作为可 ingest 输入；
+- `messages.html` 暂不参与 ingest。
+
+说明：由于不同版本 `WeChatDataAnalysis` 的导出细节可能存在差异，当前实现基于仓库公开导出逻辑与常见目录模式兼容设计；若你的导出目录与上述结构不同，请优先保留 `manifest.json` 与 `conversations/*/messages.json` 再接入本项目。
+
 ### 12.4 命令示例
 
 ```bash
 python -m src.cli.main init --config config/config.yaml
 python -m src.cli.main ingest --config config/config.yaml
 python -m src.cli.main chat --config config/config.yaml --message "今天怎么样？"
-python -m src.cli.main wechat-connect --config config/config.yaml --check-only
+python -m src.cli.main wechat-connect --config config/config.yaml --check-only --bridge-url "http://127.0.0.1:8787/openclaw/event"
+python -m src.cli.main wechat-connect --config config/config.yaml --bridge-url "http://127.0.0.1:8787/openclaw/event"
 python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787
 ```
 
@@ -304,11 +344,11 @@ python -m src.cli.main serve --config config/config.yaml --once-file tests/fixtu
 ### 12.5 从 ingest 到微信聊天最小跑通步骤
 
 1. 生成语料与向量库：`python -m src.cli.main ingest --config config/config.yaml`
-2. 检查或安装 OpenClaw：`python -m src.cli.main wechat-connect --config config/config.yaml`
+2. 检查或安装 OpenClaw，并自动写入桥接配置：`python -m src.cli.main wechat-connect --config config/config.yaml --bridge-url "http://127.0.0.1:8787/openclaw/event"`
 3. 启动本地桥接服务：`python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787`
-4. 将 OpenClaw 回调指向本地服务：`POST /openclaw/event`
+4. 扫码完成后，向目标联系人发送一条文本消息，确认 OpenClaw 已把私聊文本转发到本地 `POST /openclaw/event`
 
-如果你已经装好了官方 `openclaw-weixin` 渠道插件，但微信消息仍然走到 OpenClaw 默认主模型而不是本仓库的本地 `serve` 链路，需要额外执行一次路由补丁：
+如果你已经装好了官方 `openclaw-weixin` 渠道插件，但本地 `wechat-connect` 没有成功补丁旧安装目录，可手工执行兜底脚本：
 
 ```bash
 python scripts/patch_openclaw_weixin_for_afterglow.py --bridge-url "http://127.0.0.1:8787/openclaw/event"
@@ -321,10 +361,48 @@ python scripts/patch_openclaw_weixin_for_afterglow.py --bridge-url "http://127.0
 - 保留官方微信渠道收发能力，但不再默认把私聊文本交给 OpenClaw 主 Agent。
 5. 微信发来文本消息后，服务调用现有 `RAG + persona + Ollama` 链路并回传文本回复
 
-### 12.6 测试
+`scripts/start.ps1` 也已切换到正式入口：它会调用 `wechat-connect --bridge-url ...`，不再要求你额外手工跑一次补丁脚本。
+
+### 12.6 真实微信环境联调与验收
+
+推荐按以下顺序验收：
+
+1. 在 `WeChatDataAnalysis` 中导出 **JSON** 或 **TXT** 格式聊天记录；
+2. 将 `wechat.export_dir` 指向导出目录，或直接指向单个导出 ZIP；
+3. 运行 `python -m src.cli.main ingest --config config/config.yaml`，确认输出中出现 `解析器：wechat_data_analysis_v1` 或 `minimal_v1`；
+4. 运行 `python -m src.cli.main wechat-connect --config config/config.yaml --bridge-url "http://127.0.0.1:8787/openclaw/event"`；
+5. 运行 `python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787`；
+6. 在微信里向目标联系人发送文本消息；
+7. 检查控制台、`logs/wechat_bridge.log` 与微信回包内容。
+
+建议验收标准：
+
+- `ingest` 能自动识别单账号导出；
+- `contacts.json`、`messages.normalized.jsonl`、`fewshot.json`、`rag_corpus.jsonl`、`persona_prompt.txt` 全部生成；
+- `wechat-connect` 输出桥接补丁结果，而不是要求手工改 OpenClaw 文件；
+- 微信文本消息能进入 `/openclaw/event`，并收到本地生成的文本回复；
+- 非文本消息、缺少 ingest 产物、OpenClaw 回写失败时，返回明确错误码。
+
+桥接服务会把每个 `conversation_id` 的最近对话以本地 JSONL 形式持久化到：
+
+```text
+<output.base_dir>/bridge_history/
+```
+
+这些历史会在下一轮微信消息进入时自动注入 `history`，不再是固定空历史调用。
+
+### 12.7 测试
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 说明：若本地缺少 `chromadb`、`Ollama`、`Node.js/npx`，命令会返回明确错误提示，不会伪造成功状态。
+
+### 12.8 当前剩余限制
+
+- `messages.html` 尚未进入 ingest 解析链路；
+- `messages.txt` 仅做文本级 best-effort 解析，时间戳与富媒体字段不会完整保留；
+- 开启 `privacy mode` 的导出因隐藏账号与联系人标识，当前不建议直接用于 `target_wxid` 精准筛选；
+- 当前桥接仍只支持文本收发，不包含语音、图片、群聊等高级路由；
+- 当前会话历史仅按 `conversation_id` 本地滚动保存，尚未接入去重、摘要压缩或跨设备同步。
