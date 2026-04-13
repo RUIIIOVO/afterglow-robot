@@ -35,6 +35,27 @@ function Invoke-InstallScript {
   if ($LASTEXITCODE -ne 0) {
     throw "Install script failed: $ScriptPath"
   }
+  Sync-PathEnvironment
+}
+
+function Sync-PathEnvironment {
+  $allSegments = New-Object System.Collections.Generic.List[string]
+  $seen = New-Object "System.Collections.Generic.HashSet[string]" ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($rawPath in @($env:Path, [Environment]::GetEnvironmentVariable("Path", "Machine"), [Environment]::GetEnvironmentVariable("Path", "User"))) {
+    if ([string]::IsNullOrWhiteSpace($rawPath)) {
+      continue
+    }
+    foreach ($segment in ($rawPath -split ";")) {
+      $trimmed = $segment.Trim()
+      if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        continue
+      }
+      if ($seen.Add($trimmed)) {
+        $allSegments.Add($trimmed) | Out-Null
+      }
+    }
+  }
+  $env:Path = ($allSegments -join ";")
 }
 
 function Invoke-CheckedCommand {
@@ -56,6 +77,119 @@ function Invoke-CheckedCommand {
   }
 }
 
+function Test-OllamaHealth {
+  param(
+    [string]$Endpoint,
+    [int]$TimeoutSeconds = 5
+  )
+  $uri = "$($Endpoint.TrimEnd('/'))/api/tags"
+  try {
+    Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec $TimeoutSeconds | Out-Null
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-LlmRuntimeConfig {
+  param(
+    [object[]]$PythonCommand,
+    [string]$ConfigPath
+  )
+  $script = @'
+from src.common.config import load_config
+import json
+
+config = load_config(r"__CONFIG_PATH__")
+print(json.dumps({
+    "endpoint": config.llm.endpoint,
+    "model": config.llm.model,
+}, ensure_ascii=False))
+'@
+  $script = $script.Replace("__CONFIG_PATH__", $ConfigPath.Replace("\", "\\"))
+  $parts = @($PythonCommand)
+  $exe = [string]$parts[0]
+  $args = @()
+  if ($parts.Length -gt 1) {
+    $args += @($parts[1..($parts.Length - 1)])
+  }
+  $args += "-"
+  $output = @"
+$script
+"@ | & $exe @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Read LLM config failed."
+  }
+  return (($output | Out-String).Trim() | ConvertFrom-Json)
+}
+
+function Test-LocalOllamaEndpoint {
+  param(
+    [string]$Endpoint
+  )
+  try {
+    $uri = [Uri]$Endpoint
+  } catch {
+    return $false
+  }
+  return $uri.Host -in @("127.0.0.1", "localhost", "::1")
+}
+
+function Ensure-OllamaReady {
+  param(
+    [string]$OllamaExe,
+    [string]$Endpoint,
+    [string]$ModelName
+  )
+  if (-not (Test-LocalOllamaEndpoint -Endpoint $Endpoint)) {
+    Write-Host "[INFO] LLM endpoint is not local Ollama, skip local bootstrap: $Endpoint"
+    return
+  }
+
+  if (-not (Test-OllamaHealth -Endpoint $Endpoint)) {
+    Write-Host "[AUTO] Ollama service not ready, starting local server..."
+    Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden | Out-Null
+    $ready = $false
+    foreach ($i in 1..30) {
+      Start-Sleep -Seconds 1
+      if (Test-OllamaHealth -Endpoint $Endpoint) {
+        $ready = $true
+        break
+      }
+    }
+    if (-not $ready) {
+      throw "Ollama service failed to start: $Endpoint"
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($ModelName)) {
+    return
+  }
+
+  Write-Host "[AUTO] checking Ollama model: $ModelName"
+  $listOutput = & $OllamaExe list 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "ollama list failed: $($listOutput | Out-String)"
+  }
+  $modelPattern = "^{0}(\s|$)" -f [regex]::Escape($ModelName)
+  $modelFound = $false
+  foreach ($line in $listOutput) {
+    if ([string]$line -match $modelPattern) {
+      $modelFound = $true
+      break
+    }
+  }
+  if ($modelFound) {
+    return
+  }
+
+  Write-Host "[AUTO] pulling Ollama model: $ModelName"
+  & $OllamaExe pull $ModelName
+  if ($LASTEXITCODE -ne 0) {
+    throw "ollama pull failed: $ModelName"
+  }
+}
+
 function Invoke-PythonStdinScript {
   param(
     [object[]]$PythonCommand,
@@ -73,6 +207,29 @@ $ScriptContent
 "@ | & $pythonExe @pythonArgs
   if ($LASTEXITCODE -ne 0) {
     throw "Python inline script failed."
+  }
+}
+
+function Invoke-AfterglowWeixinPatch {
+  param(
+    [object[]]$PythonCommand,
+    [string]$BridgeUrl
+  )
+  $patchScript = Join-Path $repoRoot "scripts/patch_openclaw_weixin_for_afterglow.py"
+  if (-not (Test-Path -LiteralPath $patchScript)) {
+    throw "Patch script not found: $patchScript"
+  }
+  Write-Host "[AUTO] patch openclaw-weixin to route messages into afterglow-robot..."
+  $parts = @($PythonCommand)
+  $exe = [string]$parts[0]
+  $args = @()
+  if ($parts.Length -gt 1) {
+    $args += @($parts[1..($parts.Length - 1)])
+  }
+  $args += @($patchScript, "--bridge-url", $BridgeUrl)
+  & $exe @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Patch openclaw-weixin failed."
   }
 }
 
@@ -230,6 +387,7 @@ $checkScript
 
 try {
   Write-Host "[Afterglow] Startup checks begin..."
+  Sync-PathEnvironment
   $pythonCmd = Resolve-PythonCommand
   if ($null -eq $pythonCmd) {
     Write-Host "[AUTO] Python not found, trying auto-install..."
@@ -249,12 +407,21 @@ try {
   if ($null -eq $node -or $null -eq $npx) {
     Write-Host "[AUTO] Node.js or npx missing, trying auto-install..."
     Invoke-InstallScript -ScriptPath (Join-Path $repoRoot "scripts/install_node.ps1")
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    $npx = Get-Command npx -ErrorAction SilentlyContinue
+    if ($null -eq $node -or $null -eq $npx) {
+      throw "Node.js/npx still unavailable after installation."
+    }
   }
 
   $ollama = Get-Command ollama -ErrorAction SilentlyContinue
   if ($null -eq $ollama) {
     Write-Host "[AUTO] Ollama missing, trying auto-install..."
     Invoke-InstallScript -ScriptPath (Join-Path $repoRoot "scripts/install_ollama.ps1")
+    $ollama = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($null -eq $ollama) {
+      throw "Ollama still unavailable after installation."
+    }
   }
 
   $configPath = Resolve-Path -LiteralPath (Join-Path $repoRoot $Config) -ErrorAction SilentlyContinue
@@ -274,6 +441,9 @@ try {
     Write-Host "[INFO] Config file created: $configPath"
   }
 
+  $llmRuntime = Get-LlmRuntimeConfig -PythonCommand $pythonCmd -ConfigPath $configPath.Path
+  Ensure-OllamaReady -OllamaExe $ollama.Source -Endpoint $llmRuntime.endpoint -ModelName $llmRuntime.model
+
   Write-Host "[1/4] Run init (env + config checks)..."
   $initCommand = @()
   $initCommand += @($pythonCmd)
@@ -285,6 +455,8 @@ try {
   $wechatCommand += @($pythonCmd)
   $wechatCommand += @("-m", "src.cli.main", "wechat-connect", "--config", $configPath.Path)
   Invoke-CheckedCommand -Command $wechatCommand
+
+  Invoke-AfterglowWeixinPatch -PythonCommand $pythonCmd -BridgeUrl "http://$($BindHost):$Port/openclaw/event"
 
   Write-Host "[3/4] Validate ingest artifacts..."
   $artifactCheckCode = Test-IngestArtifacts -PythonCommand $pythonCmd -ConfigPath $configPath.Path

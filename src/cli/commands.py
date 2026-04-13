@@ -115,15 +115,15 @@ def handle_chat(args: argparse.Namespace) -> int:
 def handle_wechat_connect(args: argparse.Namespace) -> int:
     load_config(args.config)
     print(f"OpenClaw 安装命令：{OPENCLAW_INSTALL_CMD}")
-    try:
+    if args.check_only:
         ensure_openclaw_installed()
         print("OpenClaw 检测通过。")
-    except Exception:
-        if args.check_only:
-            raise
-        print("开始执行 OpenClaw 安装命令...")
-        run_openclaw_install()
-        print("OpenClaw 安装完成。")
+        print("下一步：在微信侧按 OpenClaw 指引扫码接入。")
+        return 0
+
+    print("开始执行 OpenClaw 安装命令（将触发扫码流程）...")
+    run_openclaw_install()
+    print("OpenClaw 安装命令执行完成。")
     print("下一步：在微信侧按 OpenClaw 指引扫码接入。")
     return 0
 

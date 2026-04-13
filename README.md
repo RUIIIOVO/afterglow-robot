@@ -274,7 +274,7 @@ python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port
 powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 ```
 
-说明：`start.ps1` 默认会自动安装缺失依赖（Python / Node.js / Ollama / OpenClaw），并在缺少 ingest 产物时自动执行 `ingest`。
+说明：`start.ps1` 默认会自动安装缺失依赖（Python / Node.js / Ollama / OpenClaw），自动拉起本地 `Ollama` 服务，并按 `config.yaml` 自动拉取缺失模型；缺少 ingest 产物时会自动执行 `ingest`。
 若配置里的 `wechat.export_dir` 当前不可用，`start.ps1` 会自动回退到 `tests/fixtures/single_account` 做本地演示跑通。
 
 指定监听地址与端口：
@@ -307,6 +307,18 @@ python -m src.cli.main serve --config config/config.yaml --once-file tests/fixtu
 2. 检查或安装 OpenClaw：`python -m src.cli.main wechat-connect --config config/config.yaml`
 3. 启动本地桥接服务：`python -m src.cli.main serve --config config/config.yaml --host 127.0.0.1 --port 8787`
 4. 将 OpenClaw 回调指向本地服务：`POST /openclaw/event`
+
+如果你已经装好了官方 `openclaw-weixin` 渠道插件，但微信消息仍然走到 OpenClaw 默认主模型而不是本仓库的本地 `serve` 链路，需要额外执行一次路由补丁：
+
+```bash
+python scripts/patch_openclaw_weixin_for_afterglow.py --bridge-url "http://127.0.0.1:8787/openclaw/event"
+```
+
+该脚本会：
+
+- 给 `channels.openclaw-weixin.afterglow` 写入直连配置；
+- 把本地安装的 `openclaw-weixin` 插件切换为“优先调用 afterglow-robot 本地桥接服务”；
+- 保留官方微信渠道收发能力，但不再默认把私聊文本交给 OpenClaw 主 Agent。
 5. 微信发来文本消息后，服务调用现有 `RAG + persona + Ollama` 链路并回传文本回复
 
 ### 12.6 测试

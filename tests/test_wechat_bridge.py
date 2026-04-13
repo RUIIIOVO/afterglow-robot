@@ -76,6 +76,20 @@ class WechatBridgeTests(unittest.TestCase):
         self.assertEqual(event.text, "你好呀")
         self.assertEqual(event.message_type, "text")
 
+    def test_adapter_falls_back_to_sender_id_when_session_id_is_empty(self) -> None:
+        adapter = OpenClawAdapter()
+        payload = {
+            "conversation_id": "",
+            "session_id": "",
+            "sender_id": "wxid_sender",
+            "message_type": "text",
+            "text": "你好呀",
+            "timestamp": 1710001234,
+        }
+        event = adapter.parse_event(payload)
+        self.assertEqual(event.conversation_id, "wxid_sender")
+        self.assertEqual(event.sender_id, "wxid_sender")
+
     def test_bridge_calls_reply_chain_on_text_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
@@ -247,4 +261,3 @@ class WechatBridgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

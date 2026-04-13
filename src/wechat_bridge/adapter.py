@@ -46,6 +46,9 @@ class OpenClawAdapter:
         event_id = self._pick_text(payload.get("event_id"), payload.get("id")) or ""
         reply_url = self._pick_text(payload.get("reply_url"), self._nested(payload, "reply", "url"))
 
+        if not conversation_id and sender_id:
+            conversation_id = sender_id
+
         if not conversation_id:
             raise OpenClawRequestFormatError("缺少 conversation_id/session_id。", context={"payload_keys": list(payload.keys())})
         if not sender_id:
@@ -124,4 +127,3 @@ class OpenClawAdapter:
             if text:
                 return text
         return ""
-
