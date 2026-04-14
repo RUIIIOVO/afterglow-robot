@@ -120,7 +120,14 @@ class WechatBridgeService:
             return 400
         if code == "OPENCLAW_WRITEBACK_FAILED":
             return 502
-        if code in {"OLLAMA_UNAVAILABLE", "VECTORSTORE_NOT_BUILT", "INGEST_ARTIFACT_MISSING"}:
+        if code in {
+            "DEPENDENCY_MISSING",
+            "OLLAMA_UNAVAILABLE",
+            "VECTORSTORE_NOT_BUILT",
+            "INGEST_ARTIFACT_MISSING",
+            "EMBEDDING_PROVIDER_MISMATCH",
+            "EMBEDDING_INIT_FAILED",
+        }:
             return 503
         return 500
 

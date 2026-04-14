@@ -11,8 +11,11 @@ dataset:
   fewshot_limit: 300
 
 embedding:
+  provider: "sentence_transformers"
   model_name: "BAAI/bge-small-zh-v1.5"
   chroma_dir: "models/chroma_db"
+  allow_fallback: true
+  fallback_provider: "hash"
 
 retrieval:
   top_k: 5

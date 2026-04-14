@@ -14,7 +14,7 @@ from src.cli.commands import handle_chat, handle_ingest, handle_wechat_connect
 from src.installer.checks import DependencyStatus, check_environment
 from src.ingestion.contacts import discover_contacts
 from src.ingestion.discovery import resolve_account_wxid, select_parser
-from src.ingestion.normalize import extract_target_candidates
+from src.ingestion.normalize import extract_conversation_candidates, extract_target_candidates
 from src.preprocess.pipeline import clean_messages
 from src.runtime.errors import AccountDetectionError, DependencyMissingError
 from src.runtime.runner import run_cli
@@ -22,9 +22,27 @@ from src.runtime.chat_service import ChatReplyResult
 
 
 class _FakeVectorStore:
-    def __init__(self, chroma_dir: Path, model_name: str) -> None:
+    collection_name = "afterglow_rag"
+
+    def __init__(
+        self,
+        chroma_dir: Path,
+        model_name: str,
+        provider: str = "sentence_transformers",
+        allow_fallback: bool = True,
+        fallback_provider: str = "hash",
+    ) -> None:
         self.chroma_dir = chroma_dir
         self.model_name = model_name
+        self.provider = provider
+        self.allow_fallback = allow_fallback
+        self.fallback_provider = fallback_provider
+        self.resolution = SimpleNamespace(
+            requested_provider=provider,
+            resolved_provider="hash",
+            fallback_used=True,
+            fallback_reason="test fallback",
+        )
 
     def build(self, records: list) -> None:
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
@@ -32,6 +50,16 @@ class _FakeVectorStore:
 
     def query(self, query_text: str, top_k: int) -> list[dict]:
         return [{"id": "rag-1", "text": "检索文本", "context": "上文", "distance": 0.1}]
+
+    @property
+    def embedding_metadata(self) -> dict[str, object]:
+        return {
+            "requested_provider": self.provider,
+            "resolved_provider": "hash",
+            "model_name": self.model_name,
+            "fallback_used": True,
+            "fallback_reason": "test fallback",
+        }
 
 
 class Phase1MinimalTests(unittest.TestCase):
@@ -62,8 +90,11 @@ class Phase1MinimalTests(unittest.TestCase):
             "  fewshot_limit: 10\n"
             "\n"
             "embedding:\n"
+            '  provider: "sentence_transformers"\n'
             '  model_name: "BAAI/bge-small-zh-v1.5"\n'
             f'  chroma_dir: "{(workdir / "models" / "chroma_db").as_posix()}"\n'
+            "  allow_fallback: true\n"
+            '  fallback_provider: "hash"\n'
             "\n"
             "retrieval:\n"
             "  top_k: 5\n"
@@ -114,6 +145,21 @@ class Phase1MinimalTests(unittest.TestCase):
         )
         self.assertTrue(all(item.sender_role == "self" for item in self_candidates))
 
+    def test_conversation_candidates_include_counterpart_context(self) -> None:
+        parser = select_parser(self.single_export_dir)
+        contacts = discover_contacts(parser, self.single_export_dir, "wxid_owner")
+        conversation_candidates, _ = extract_conversation_candidates(
+            parser=parser,
+            export_dir=self.single_export_dir,
+            account_wxid="wxid_owner",
+            target_wxid="wxid_target",
+            contacts=contacts,
+        )
+        roles = [(item.message_id, item.sender_role) for item in conversation_candidates]
+        self.assertIn(("m1", "counterpart"), roles)
+        self.assertIn(("m2", "target"), roles)
+        self.assertIn(("m10", "counterpart"), roles)
+
     def test_filters_non_text_empty_and_short_messages(self) -> None:
         parser = select_parser(self.single_export_dir)
         contacts = discover_contacts(parser, self.single_export_dir, "wxid_owner")
@@ -145,9 +191,19 @@ class Phase1MinimalTests(unittest.TestCase):
             fewshot_path = output_dir / "fewshot.json"
             rag_path = output_dir / "rag_corpus.jsonl"
             persona_path = output_dir / "persona_prompt.txt"
+            truth_profile_path = output_dir / "truth" / "persona_profile.json"
+            dialog_turns_path = output_dir / "truth" / "dialog_turns.jsonl"
+            voice_path = output_dir / "voice" / "utterances.normalized.jsonl"
+            candidate_path = output_dir / "retrieval" / "fewshot_candidates.jsonl"
+            manifest_path = output_dir / "artifacts" / "manifest.json"
             self.assertTrue(fewshot_path.exists())
             self.assertTrue(rag_path.exists())
             self.assertTrue(persona_path.exists())
+            self.assertTrue(truth_profile_path.exists())
+            self.assertTrue(dialog_turns_path.exists())
+            self.assertTrue(voice_path.exists())
+            self.assertTrue(candidate_path.exists())
+            self.assertTrue(manifest_path.exists())
 
             fewshots = json.loads(fewshot_path.read_text(encoding="utf-8"))
             self.assertGreaterEqual(len(fewshots), 1)
@@ -161,11 +217,89 @@ class Phase1MinimalTests(unittest.TestCase):
             ]
             self.assertEqual(len(rag_lines), 3)
             for row in rag_lines:
-                self.assertEqual(set(row.keys()), {"id", "context", "text", "timestamp", "target_wxid", "source_message_id"})
+                self.assertIn("turn_id", row)
+                self.assertEqual(
+                    set(row.keys()),
+                    {"id", "turn_id", "context", "text", "timestamp", "target_wxid", "source_message_id"},
+                )
 
             persona = persona_path.read_text(encoding="utf-8")
             self.assertIn("禁止暴露 AI 身份", persona)
+            self.assertIn("表达倾向", persona)
 
+            profile = json.loads(truth_profile_path.read_text(encoding="utf-8"))
+            self.assertEqual(profile["target_wxid"], "wxid_target")
+            self.assertIn("response_length_label", profile)
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["parser"], "minimal_v1")
+            self.assertEqual(manifest["build_status"], "ready")
+            self.assertEqual(manifest["embedding"]["resolved_provider"], "hash")
+            self.assertEqual(manifest["artifacts"]["messages"]["count"], 6)
+            self.assertEqual(manifest["artifacts"]["legacy_messages"]["count"], 3)
+
+            truth_lines = [
+                json.loads(line)
+                for line in (output_dir / "truth" / "messages.normalized.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            truth_roles = {row["sender_role"] for row in truth_lines}
+            self.assertEqual(truth_roles, {"target", "counterpart"})
+            truth_message_ids = {row["message_id"] for row in truth_lines}
+            self.assertIn("m5", truth_message_ids)
+
+    def test_ingest_writes_failed_manifest_when_vector_build_fails(self) -> None:
+        class _FailingVectorStore:
+            collection_name = "afterglow_rag"
+
+            def __init__(
+                self,
+                chroma_dir: Path,
+                model_name: str,
+                provider: str = "sentence_transformers",
+                allow_fallback: bool = True,
+                fallback_provider: str = "hash",
+            ) -> None:
+                self.chroma_dir = chroma_dir
+                self.model_name = model_name
+                self.resolution = SimpleNamespace(
+                    requested_provider=provider,
+                    resolved_provider="",
+                    fallback_used=False,
+                    fallback_reason="",
+                )
+
+            @property
+            def embedding_metadata(self) -> dict[str, object]:
+                return {
+                    "requested_provider": "sentence_transformers",
+                    "resolved_provider": "",
+                    "model_name": self.model_name,
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                }
+
+            def build(self, records: list) -> None:
+                raise DependencyMissingError("chromadb", "请先安装 Python 依赖：pip install chromadb")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config_path = self._write_config(
+                workdir=workdir,
+                export_dir=self.single_export_dir,
+                target_wxid="wxid_target",
+            )
+            args = Namespace(config=str(config_path), target_wxid=None, export_dir=None)
+            with patch("src.cli.commands.ChromaVectorStore", _FailingVectorStore):
+                with self.assertRaises(DependencyMissingError):
+                    handle_ingest(args)
+
+            manifest_path = workdir / "output" / "artifacts" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["build_status"], "failed")
+            self.assertEqual(manifest["error"]["type"], "DependencyMissingError")
+            self.assertEqual(manifest["error"]["stage"], "vector_build")
+            self.assertEqual(manifest["embedding"]["requested_provider"], "sentence_transformers")
     def test_chat_command_outputs_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)

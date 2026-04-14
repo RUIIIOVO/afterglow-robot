@@ -86,6 +86,42 @@ class VectorStoreNotBuiltError(AfterglowError):
         )
 
 
+class EmbeddingInitializationError(AfterglowError):
+    def __init__(self, provider: str, details: str, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            user_message=f"Embedding 初始化失败：{provider}。{details}",
+            code="EMBEDDING_INIT_FAILED",
+            context={"provider": provider, **(context or {})},
+        )
+
+
+class EmbeddingProviderMismatchError(AfterglowError):
+    def __init__(
+        self,
+        expected_provider: str,
+        actual_provider: str,
+        expected_model: str = "",
+        actual_model: str = "",
+        details: str = "",
+    ) -> None:
+        suffix = f" 当前={expected_provider}，已构建={actual_provider}"
+        if expected_model or actual_model:
+            suffix += f"；模型 当前={expected_model or 'unknown'}，已构建={actual_model or 'unknown'}"
+        if details:
+            suffix += f"；{details}"
+        super().__init__(
+            user_message="向量库 embedding 配置与当前运行配置不一致，请重新运行 ingest。" + suffix,
+            code="EMBEDDING_PROVIDER_MISMATCH",
+            context={
+                "expected_provider": expected_provider,
+                "actual_provider": actual_provider,
+                "expected_model": expected_model,
+                "actual_model": actual_model,
+                "details": details,
+            },
+        )
+
+
 class IngestArtifactsMissingError(AfterglowError):
     def __init__(self, missing_path: str) -> None:
         super().__init__(

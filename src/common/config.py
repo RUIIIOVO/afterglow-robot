@@ -30,8 +30,11 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
+    provider: str
     model_name: str
     chroma_dir: str
+    allow_fallback: bool
+    fallback_provider: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,19 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ConfigValidationError("embedding.allow_fallback 必须是布尔值", context={"value": value})
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path)
     if not path.exists():
@@ -119,8 +135,11 @@ def load_config(config_path: str | Path) -> AppConfig:
                 fewshot_limit=int(_require(raw, "dataset.fewshot_limit")),
             ),
             embedding=EmbeddingConfig(
+                provider=str(raw.get("embedding", {}).get("provider", "sentence_transformers")).strip(),
                 model_name=str(_require(raw, "embedding.model_name")).strip(),
                 chroma_dir=str(_require(raw, "embedding.chroma_dir")).strip(),
+                allow_fallback=_as_bool(raw.get("embedding", {}).get("allow_fallback"), True),
+                fallback_provider=str(raw.get("embedding", {}).get("fallback_provider", "hash")).strip(),
             ),
             retrieval=RetrievalConfig(
                 top_k=int(_require(raw, "retrieval.top_k")),
@@ -163,6 +182,17 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigValidationError("embedding.model_name 不能为空", context={"field": "embedding.model_name"})
     if config.embedding.chroma_dir == "":
         raise ConfigValidationError("embedding.chroma_dir 不能为空", context={"field": "embedding.chroma_dir"})
+    allowed_embedding_providers = {"sentence_transformers", "hash"}
+    if config.embedding.provider not in allowed_embedding_providers:
+        raise ConfigValidationError(
+            "embedding.provider 必须是 sentence_transformers 或 hash",
+            context={"field": "embedding.provider", "value": config.embedding.provider},
+        )
+    if config.embedding.fallback_provider not in allowed_embedding_providers:
+        raise ConfigValidationError(
+            "embedding.fallback_provider 必须是 sentence_transformers 或 hash",
+            context={"field": "embedding.fallback_provider", "value": config.embedding.fallback_provider},
+        )
     if config.dataset.min_text_length <= 0:
         raise ConfigValidationError("dataset.min_text_length 必须大于 0")
     if config.dataset.fewshot_limit <= 0:

@@ -9,9 +9,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from src.common.io_utils import write_json
 from src.cli.commands import handle_serve
 from src.runtime.chat_service import ChatReplyResult
-from src.runtime.errors import OpenClawWriteBackError, VectorStoreNotBuiltError
+from src.runtime.errors import DependencyMissingError, OpenClawWriteBackError, VectorStoreNotBuiltError
 from src.wechat_bridge.adapter import OpenClawAdapter
 from src.wechat_bridge.history_store import ConversationHistoryEntry
 from src.wechat_bridge.history_store import ConversationHistoryStore
@@ -21,7 +22,14 @@ from src.wechat_bridge.server import WechatBridgeService
 
 
 class _FakeVectorStore:
-    def __init__(self, chroma_dir: Path, model_name: str) -> None:
+    def __init__(
+        self,
+        chroma_dir: Path,
+        model_name: str,
+        provider: str = "sentence_transformers",
+        allow_fallback: bool = True,
+        fallback_provider: str = "hash",
+    ) -> None:
         self.chroma_dir = chroma_dir
         self.model_name = model_name
 
@@ -45,8 +53,11 @@ class WechatBridgeTests(unittest.TestCase):
             "  fewshot_limit: 10\n"
             "\n"
             "embedding:\n"
+            '  provider: "sentence_transformers"\n'
             '  model_name: "BAAI/bge-small-zh-v1.5"\n'
             f'  chroma_dir: "{(workdir / "models" / "chroma_db").as_posix()}"\n'
+            "  allow_fallback: true\n"
+            '  fallback_provider: "hash"\n'
             "\n"
             "retrieval:\n"
             "  top_k: 5\n"
@@ -224,6 +235,28 @@ class WechatBridgeTests(unittest.TestCase):
             self.assertEqual(result.status_code, 503)
             self.assertEqual(result.payload["error"]["code"], "VECTORSTORE_NOT_BUILT")
 
+    def test_bridge_dependency_missing_returns_service_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config = self._write_config(workdir)
+            from src.common.config import load_config
+
+            service = WechatBridgeService(config=load_config(config))
+            payload = {
+                "conversation_id": "conv_dep",
+                "sender_id": "wxid_u",
+                "message_type": "text",
+                "text": "hi",
+                "timestamp": 1710002115,
+            }
+            with patch(
+                "src.wechat_bridge.server.generate_chat_reply",
+                side_effect=DependencyMissingError("chromadb", "请先安装 Python 依赖：pip install chromadb"),
+            ):
+                result = service.process_payload(payload)
+            self.assertEqual(result.status_code, 503)
+            self.assertEqual(result.payload["error"]["code"], "DEPENDENCY_MISSING")
+
     def test_bridge_returns_reply_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
@@ -329,6 +362,136 @@ class WechatBridgeTests(unittest.TestCase):
                     {"role": "assistant", "content": "下一句回复"},
                 ],
             )
+
+    def test_bridge_history_is_injected_into_real_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config = self._write_config(workdir)
+            from src.common.artifacts import resolve_artifact_paths
+            from src.common.config import load_config
+
+            app_config = load_config(config)
+            output_base = app_config.resolve_path(app_config.output.base_dir)
+            paths = resolve_artifact_paths(output_base)
+            output_base.mkdir(parents=True, exist_ok=True)
+            paths.persona_prompt.parent.mkdir(parents=True, exist_ok=True)
+            paths.persona_prompt.write_text("你是助手\n禁止暴露 AI 身份。", encoding="utf-8")
+            write_json(paths.retrieval_fewshot, [{"context": "上文样例", "response": "样例回复"}])
+
+            history_store = ConversationHistoryStore(workdir / "history")
+            history_store.append_entries(
+                "conv_prompt",
+                [
+                    ConversationHistoryEntry(role="user", content="前一轮用户", timestamp=1710003301, sender_id="wxid_u"),
+                    ConversationHistoryEntry(
+                        role="assistant",
+                        content="前一轮回复",
+                        timestamp=1710003302,
+                        sender_id="afterglow",
+                    ),
+                ],
+            )
+            service = WechatBridgeService(config=app_config, history_store=history_store)
+
+            prompt_holder: dict[str, str] = {}
+
+            class _PromptVectorStore:
+                def __init__(
+                    self,
+                    chroma_dir: Path,
+                    model_name: str,
+                    provider: str = "sentence_transformers",
+                    allow_fallback: bool = True,
+                    fallback_provider: str = "hash",
+                ) -> None:
+                    self.chroma_dir = chroma_dir
+                    self.model_name = model_name
+
+                def query(self, query_text: str, top_k: int) -> list[dict]:
+                    return [{"id": "rag-1", "text": "检索文本", "context": "检索上文", "distance": 0.1}]
+
+            class _FakeOllamaClient:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def check_health(self) -> None:
+                    return None
+
+                def generate(self, prompt: str) -> str:
+                    prompt_holder["prompt"] = prompt
+                    return "桥接回复"
+
+            payload = {
+                "conversation_id": "conv_prompt",
+                "sender_id": "wxid_u",
+                "message_type": "text",
+                "text": "这一轮问题",
+                "timestamp": 1710003303,
+            }
+
+            with patch("src.runtime.chat_service.ChromaVectorStore", _PromptVectorStore):
+                with patch("src.runtime.chat_service.OllamaClient", _FakeOllamaClient):
+                    result = service.process_payload(payload)
+
+            self.assertEqual(result.status_code, 200)
+            self.assertIn("前一轮用户", prompt_holder["prompt"])
+            self.assertIn("前一轮回复", prompt_holder["prompt"])
+            self.assertIn("这一轮问题", prompt_holder["prompt"])
+
+    def test_chat_service_can_fall_back_to_legacy_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            config = self._write_config(workdir)
+            from src.common.config import load_config
+            from src.runtime.chat_service import generate_chat_reply
+
+            output_dir = workdir / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "persona_prompt.txt").write_text("你是助手\n禁止暴露 AI 身份。", encoding="utf-8")
+            (output_dir / "fewshot.json").write_text(
+                '[{"context":"旧上文","response":"旧回复"}]',
+                encoding="utf-8",
+            )
+
+            prompt_holder: dict[str, str] = {}
+
+            class _LegacyVectorStore:
+                def __init__(
+                    self,
+                    chroma_dir: Path,
+                    model_name: str,
+                    provider: str = "sentence_transformers",
+                    allow_fallback: bool = True,
+                    fallback_provider: str = "hash",
+                ) -> None:
+                    self.chroma_dir = chroma_dir
+                    self.model_name = model_name
+
+                def query(self, query_text: str, top_k: int) -> list[dict]:
+                    return [{"id": "rag-1", "text": "旧检索文本", "context": "旧检索上文", "distance": 0.1}]
+
+            class _FakeOllamaClient:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def check_health(self) -> None:
+                    return None
+
+                def generate(self, prompt: str) -> str:
+                    prompt_holder["prompt"] = prompt
+                    return "旧链路回复"
+
+            with patch("src.runtime.chat_service.ChromaVectorStore", _LegacyVectorStore):
+                with patch("src.runtime.chat_service.OllamaClient", _FakeOllamaClient):
+                    result = generate_chat_reply(
+                        config=load_config(config),
+                        message="你好",
+                        history=[{"role": "user", "content": "前情"}],
+                    )
+
+            self.assertEqual(result.reply_text, "旧链路回复")
+            self.assertIn("旧上文", prompt_holder["prompt"])
+            self.assertIn("前情", prompt_holder["prompt"])
 
     def test_bridge_distinguishes_writeback_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

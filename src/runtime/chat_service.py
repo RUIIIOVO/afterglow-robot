@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.common.artifacts import resolve_artifact_paths
 from src.common.config import AppConfig
 from src.common.io_utils import read_json
 from src.rag.prompt_builder import build_prompt, parse_fewshots, parse_history
@@ -29,13 +30,28 @@ def generate_chat_reply(
         raise ConfigValidationError("--message 不能为空")
 
     output_base = config.resolve_path(config.output.base_dir)
-    persona_prompt = _read_required_text(output_base / "persona_prompt.txt")
-    fewshots_raw = read_json(_read_required_path(output_base / "fewshot.json"))
+    artifact_paths = resolve_artifact_paths(output_base)
+    persona_prompt = _read_required_text_from_candidates(
+        artifact_paths.persona_prompt,
+        artifact_paths.legacy_persona,
+    )
+    fewshots_raw = read_json(
+        _read_required_path_from_candidates(
+            artifact_paths.retrieval_fewshot,
+            artifact_paths.legacy_fewshot,
+        )
+    )
     fewshots = parse_fewshots(fewshots_raw, limit=config.conversation.fewshot_limit)
     history_rows = parse_history(history or [], limit=config.conversation.history_limit)
 
     chroma_dir = config.resolve_path(config.embedding.chroma_dir)
-    vector_store = ChromaVectorStore(chroma_dir=chroma_dir, model_name=config.embedding.model_name)
+    vector_store = ChromaVectorStore(
+        chroma_dir=chroma_dir,
+        model_name=config.embedding.model_name,
+        provider=config.embedding.provider,
+        allow_fallback=config.embedding.allow_fallback,
+        fallback_provider=config.embedding.fallback_provider,
+    )
     rag_hits = vector_store.query(text, top_k=config.retrieval.top_k)
     prompt = build_prompt(
         persona_prompt=persona_prompt,
@@ -56,9 +72,23 @@ def _read_required_path(path: Path) -> Path:
     return path
 
 
+def _read_required_path_from_candidates(*paths: Path) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return _read_required_path(paths[0])
+
+
 def _read_required_text(path: Path) -> str:
     content = _read_required_path(path).read_text(encoding="utf-8").strip()
     if not content:
         raise IngestArtifactsMissingError(str(path))
     return content
 
+
+def _read_required_text_from_candidates(*paths: Path) -> str:
+    path = _read_required_path_from_candidates(*paths)
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        raise IngestArtifactsMissingError(str(path))
+    return content

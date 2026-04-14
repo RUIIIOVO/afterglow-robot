@@ -1,52 +1,43 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
 from src.models.messages import RagRecord
-from src.runtime.errors import DependencyMissingError, VectorStoreNotBuiltError
-
-
-class HashEmbeddingFunction:
-    def __init__(self, model_name: str, dim: int = 256) -> None:
-        self.model_name = model_name
-        self.dim = dim
-
-    def __call__(self, input: list[str]) -> list[list[float]]:
-        return [self._embed(text) for text in input]
-
-    def name(self) -> str:
-        return f"hash-{self.model_name}"
-
-    def embed_documents(self, input: list[str]) -> list[list[float]]:
-        return self.__call__(input)
-
-    def embed_query(self, input: list[str]) -> list[list[float]]:
-        return self.__call__(input)
-
-    def _embed(self, text: str) -> list[float]:
-        vector = [0.0] * self.dim
-        content = text.strip()
-        if not content:
-            return vector
-        for index, char in enumerate(content):
-            bucket = (ord(char) + index * 131) % self.dim
-            vector[bucket] += 1.0
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm > 0:
-            vector = [value / norm for value in vector]
-        return vector
+from src.runtime.errors import (
+    DependencyMissingError,
+    EmbeddingProviderMismatchError,
+    VectorStoreNotBuiltError,
+)
+from src.vectorstore.embedding_backends import EmbeddingResolution, resolve_embedding_backend
 
 
 class ChromaVectorStore:
     collection_name = "afterglow_rag"
+    embedding_schema_version = 1
 
-    def __init__(self, chroma_dir: Path, model_name: str) -> None:
+    def __init__(
+        self,
+        chroma_dir: Path,
+        model_name: str,
+        provider: str = "sentence_transformers",
+        allow_fallback: bool = True,
+        fallback_provider: str = "hash",
+    ) -> None:
         self.chroma_dir = chroma_dir
         self.model_name = model_name
-        self._embedding = HashEmbeddingFunction(model_name=model_name)
+        self.resolution = resolve_embedding_backend(
+            provider=provider,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+            fallback_provider=fallback_provider,
+        )
+        self._embedding = self.resolution.embedding_function
         self._client = self._create_client()
+
+    @property
+    def embedding_metadata(self) -> dict[str, object]:
+        return self.resolution.to_metadata()
 
     def _create_client(self) -> Any:
         try:
@@ -66,7 +57,13 @@ class ChromaVectorStore:
             pass
         collection = self._client.create_collection(
             name=self.collection_name,
-            metadata={"embedding_model": self.model_name},
+            metadata={
+                "embedding_schema_version": self.embedding_schema_version,
+                "embedding_requested_provider": self.resolution.requested_provider,
+                "embedding_provider": self.resolution.resolved_provider,
+                "embedding_model": self.model_name,
+                "embedding_fallback_used": self.resolution.fallback_used,
+            },
             embedding_function=self._embedding,
         )
         if not records:
@@ -75,6 +72,7 @@ class ChromaVectorStore:
         docs = [item.text for item in records]
         metadatas = [
             {
+                "turn_id": item.turn_id,
                 "context": item.context,
                 "timestamp": item.timestamp,
                 "target_wxid": item.target_wxid,
@@ -92,6 +90,25 @@ class ChromaVectorStore:
             )
         except Exception as error:  # noqa: BLE001
             raise VectorStoreNotBuiltError(str(self.chroma_dir)) from error
+        metadata = getattr(collection, "metadata", {}) or {}
+        schema_version = metadata.get("embedding_schema_version")
+        actual_provider = str(metadata.get("embedding_provider", "")).strip()
+        actual_model = str(metadata.get("embedding_model", "")).strip()
+        if schema_version != self.embedding_schema_version or not actual_provider or not actual_model:
+            raise EmbeddingProviderMismatchError(
+                expected_provider=self.resolution.resolved_provider,
+                actual_provider=actual_provider or "unknown",
+                expected_model=self.model_name,
+                actual_model=actual_model or "unknown",
+                details="向量库缺少或不兼容 embedding metadata",
+            )
+        if actual_provider != self.resolution.resolved_provider or actual_model != self.model_name:
+            raise EmbeddingProviderMismatchError(
+                expected_provider=self.resolution.resolved_provider,
+                actual_provider=actual_provider,
+                expected_model=self.model_name,
+                actual_model=actual_model,
+            )
         result = collection.query(query_texts=[query_text], n_results=top_k)
         ids = result.get("ids", [[]])[0]
         docs = result.get("documents", [[]])[0]
@@ -99,13 +116,14 @@ class ChromaVectorStore:
         distances = result.get("distances", [[]])[0]
         hits: list[dict] = []
         for record_id, doc, meta, distance in zip(ids, docs, metas, distances):
+            hit_meta = meta if isinstance(meta, dict) else {}
             hits.append(
                 {
                     "id": record_id,
                     "text": doc,
-                    "context": meta.get("context", "") if isinstance(meta, dict) else "",
+                    "context": hit_meta.get("context", ""),
                     "distance": distance,
-                    "metadata": meta,
+                    "metadata": hit_meta,
                 }
             )
         return hits

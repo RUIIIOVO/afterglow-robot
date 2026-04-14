@@ -241,8 +241,14 @@ function Test-PythonPackages {
 import importlib
 import sys
 required = ["yaml", "chromadb"]
+optional = ["sentence_transformers"]
 missing = []
 for name in required:
+    try:
+        importlib.import_module(name)
+    except Exception:
+        missing.append(name)
+for name in optional:
     try:
         importlib.import_module(name)
     except Exception:
@@ -290,7 +296,7 @@ function Ensure-PythonPackages {
   $pipInstallOk = $false
   $installArgs = @()
   $installArgs += $args
-  $installArgs += @("-m", "pip", "install", "--disable-pip-version-check", "-e", ".")
+  $installArgs += @("-m", "pip", "install", "--disable-pip-version-check", "-e", ".[embeddings]")
   & $exe @installArgs
   if ($LASTEXITCODE -eq 0) {
     $pipInstallOk = $true
@@ -354,7 +360,13 @@ try:
             raise IngestArtifactsMissingError(str(path))
 
     chroma_dir = config.resolve_path(config.embedding.chroma_dir)
-    store = ChromaVectorStore(chroma_dir=chroma_dir, model_name=config.embedding.model_name)
+    store = ChromaVectorStore(
+        chroma_dir=chroma_dir,
+        model_name=config.embedding.model_name,
+        provider=config.embedding.provider,
+        allow_fallback=config.embedding.allow_fallback,
+        fallback_provider=config.embedding.fallback_provider,
+    )
     try:
         store.query("ping", top_k=1)
     except VectorStoreNotBuiltError:

@@ -3,25 +3,31 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 
+from src.common.artifacts import resolve_artifact_paths
 from src.common.config import AppConfig, load_config
 from src.common.io_utils import read_json, write_json, write_jsonl
 from src.ingestion.contacts import discover_contacts
 from src.ingestion.discovery import resolve_account_wxid, select_parser
-from src.ingestion.normalize import extract_target_candidates
+from src.ingestion.normalize import extract_conversation_candidates, extract_target_candidates
 from src.installer.checks import (
     check_environment,
     ensure_openclaw_installed,
     run_openclaw_install,
 )
 from src.preprocess.pipeline import (
-    build_fewshot,
     build_persona_prompt,
+    build_persona_profile,
+    build_dialog_turns,
+    build_fewshot_candidates,
     build_rag_corpus,
+    build_voice_utterances,
     clean_messages,
     ensure_non_empty,
+    select_fewshots,
 )
 from src.rag.prompt_builder import parse_history, to_pretty_json
 from src.runtime.chat_service import generate_chat_reply
@@ -60,35 +66,158 @@ def handle_ingest(args: argparse.Namespace) -> int:
     parser = select_parser(export_dir)
     account_wxid = resolve_account_wxid(parser, export_dir, config.wechat.account_wxid)
     contacts = discover_contacts(parser, export_dir, account_wxid)
-    candidates, resolved_target_wxid = extract_target_candidates(
+    style_candidates, resolved_target_wxid = extract_target_candidates(
         parser=parser,
         export_dir=export_dir,
         account_wxid=account_wxid,
         target_wxid=config.wechat.target_wxid,
         contacts=contacts,
     )
-    messages = clean_messages(candidates, min_text_length=config.dataset.min_text_length)
-    ensure_non_empty(messages, target_wxid=config.wechat.target_wxid)
-    fewshots = build_fewshot(messages, limit=config.dataset.fewshot_limit)
-    rag_records = build_rag_corpus(messages, resolved_target_wxid=resolved_target_wxid)
-    persona_prompt = build_persona_prompt(config.wechat.target_wxid)
+    conversation_candidates, _ = extract_conversation_candidates(
+        parser=parser,
+        export_dir=export_dir,
+        account_wxid=account_wxid,
+        target_wxid=config.wechat.target_wxid,
+        contacts=contacts,
+    )
+    style_messages = clean_messages(
+        style_candidates,
+        min_text_length=config.dataset.min_text_length,
+        source_parser=parser.name,
+    )
+    conversation_messages = clean_messages(
+        conversation_candidates,
+        min_text_length=1,
+        source_parser=parser.name,
+    )
+    ensure_non_empty(style_messages, target_wxid=config.wechat.target_wxid)
+    dialog_turns = build_dialog_turns(conversation_messages)
+    voice_utterances = build_voice_utterances(style_messages)
+    persona_profile = build_persona_profile(
+        messages=style_messages,
+        voice_utterances=voice_utterances,
+        target_wxid=resolved_target_wxid,
+    )
+    fewshot_candidates = build_fewshot_candidates(dialog_turns, persona_profile)
+    fewshots = select_fewshots(fewshot_candidates, limit=config.dataset.fewshot_limit)
+    rag_records = build_rag_corpus(style_messages, dialog_turns, resolved_target_wxid=resolved_target_wxid)
+    persona_prompt = build_persona_prompt(persona_profile)
 
     output_base = config.resolve_path(config.output.base_dir)
     output_base.mkdir(parents=True, exist_ok=True)
-    write_json(output_base / "contacts.json", [contact.to_dict() for contact in contacts])
-    write_jsonl(output_base / "messages.normalized.jsonl", [message.to_dict() for message in messages])
-    write_json(output_base / "fewshot.json", [sample.to_dict() for sample in fewshots])
-    write_jsonl(output_base / "rag_corpus.jsonl", [record.to_dict() for record in rag_records])
-    (output_base / "persona_prompt.txt").write_text(persona_prompt, encoding="utf-8")
+    artifact_paths = resolve_artifact_paths(output_base)
+    contacts_payload = [contact.to_dict() for contact in contacts]
+    legacy_messages_payload = [message.to_dict() for message in style_messages]
+    truth_messages_payload = [message.to_dict() for message in conversation_messages]
+    dialog_turns_payload = [turn.to_dict() for turn in dialog_turns]
+    voice_payload = [item.to_dict() for item in voice_utterances]
+    fewshot_candidate_payload = [candidate.to_dict() for candidate in fewshot_candidates]
+    fewshot_payload = [sample.to_dict() for sample in fewshots]
+    rag_payload = [record.to_dict() for record in rag_records]
+
+    write_json(artifact_paths.legacy_contacts, contacts_payload)
+    write_json(artifact_paths.truth_contacts, contacts_payload)
+    write_jsonl(artifact_paths.legacy_messages, legacy_messages_payload)
+    write_jsonl(artifact_paths.truth_messages, truth_messages_payload)
+    write_jsonl(artifact_paths.truth_dialog_turns, dialog_turns_payload)
+    write_json(artifact_paths.truth_persona_profile, persona_profile.to_dict())
+    write_jsonl(artifact_paths.voice_utterances, voice_payload)
+    write_json(artifact_paths.legacy_fewshot, fewshot_payload)
+    write_json(artifact_paths.retrieval_fewshot, fewshot_payload)
+    write_jsonl(artifact_paths.retrieval_fewshot_candidates, fewshot_candidate_payload)
+    write_jsonl(artifact_paths.legacy_rag, rag_payload)
+    write_jsonl(artifact_paths.retrieval_rag, rag_payload)
+    artifact_paths.legacy_persona.parent.mkdir(parents=True, exist_ok=True)
+    artifact_paths.legacy_persona.write_text(persona_prompt, encoding="utf-8")
+    artifact_paths.persona_prompt.parent.mkdir(parents=True, exist_ok=True)
+    artifact_paths.persona_prompt.write_text(persona_prompt, encoding="utf-8")
 
     chroma_dir = config.resolve_path(config.embedding.chroma_dir)
-    vector_store = ChromaVectorStore(chroma_dir=chroma_dir, model_name=config.embedding.model_name)
-    vector_store.build(rag_records)
+    manifest = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "build_status": "pending",
+        "parser": parser.name,
+        "account_wxid": account_wxid,
+        "target_wxid": config.wechat.target_wxid,
+        "resolved_target_wxid": resolved_target_wxid,
+        "embedding": {
+            "requested_provider": config.embedding.provider,
+            "resolved_provider": "",
+            "model_name": config.embedding.model_name,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "chroma_dir": str(chroma_dir),
+            "collection_name": ChromaVectorStore.collection_name,
+        },
+        "artifacts": {
+            "contacts": {"path": _relative_to_output(artifact_paths.truth_contacts, output_base), "count": len(contacts_payload)},
+            "legacy_messages": {
+                "path": _relative_to_output(artifact_paths.legacy_messages, output_base),
+                "count": len(legacy_messages_payload),
+            },
+            "messages": {"path": _relative_to_output(artifact_paths.truth_messages, output_base), "count": len(truth_messages_payload)},
+            "dialog_turns": {
+                "path": _relative_to_output(artifact_paths.truth_dialog_turns, output_base),
+                "count": len(dialog_turns_payload),
+            },
+            "voice_utterances": {
+                "path": _relative_to_output(artifact_paths.voice_utterances, output_base),
+                "count": len(voice_payload),
+            },
+            "fewshot_candidates": {
+                "path": _relative_to_output(artifact_paths.retrieval_fewshot_candidates, output_base),
+                "count": len(fewshot_candidate_payload),
+            },
+            "fewshot": {"path": _relative_to_output(artifact_paths.retrieval_fewshot, output_base), "count": len(fewshot_payload)},
+            "rag_corpus": {"path": _relative_to_output(artifact_paths.retrieval_rag, output_base), "count": len(rag_payload)},
+            "persona_prompt": {"path": _relative_to_output(artifact_paths.persona_prompt, output_base), "count": 1},
+        },
+    }
+    write_json(artifact_paths.manifest, manifest)
+
+    vector_store: ChromaVectorStore | None = None
+    failure_stage = "embedding_init"
+    try:
+        vector_store = ChromaVectorStore(
+            chroma_dir=chroma_dir,
+            model_name=config.embedding.model_name,
+            provider=config.embedding.provider,
+            allow_fallback=config.embedding.allow_fallback,
+            fallback_provider=config.embedding.fallback_provider,
+        )
+        failure_stage = "vector_build"
+        vector_store.build(rag_records)
+    except Exception as error:
+        manifest["build_status"] = "failed"
+        if vector_store is not None:
+            manifest["embedding"].update(vector_store.embedding_metadata)
+        manifest["error"] = {
+            "type": error.__class__.__name__,
+            "message": str(error),
+            "stage": failure_stage,
+        }
+        write_json(artifact_paths.manifest, manifest)
+        raise
+
+    manifest["build_status"] = "ready"
+    manifest["embedding"].update(
+        {
+            **vector_store.embedding_metadata,
+            "chroma_dir": str(chroma_dir),
+            "collection_name": vector_store.collection_name,
+        }
+    )
+    write_json(artifact_paths.manifest, manifest)
 
     print(f"ingest 完成，解析器：{parser.name}")
     print(f"账号：{account_wxid}，目标：{config.wechat.target_wxid}")
     print(f"产物目录：{output_base}")
     print(f"向量库目录：{chroma_dir}")
+    if vector_store.resolution.fallback_used:
+        print(
+            "警告：embedding 已降级为 "
+            f"{vector_store.resolution.resolved_provider}，原因：{vector_store.resolution.fallback_reason}"
+        )
     return 0
 
 
@@ -188,3 +317,10 @@ def _load_with_overrides(args: argparse.Namespace) -> AppConfig:
     if args.export_dir:
         wechat = replace(wechat, export_dir=args.export_dir)
     return replace(config, wechat=wechat)
+
+
+def _relative_to_output(path: Path, output_base: Path) -> str:
+    try:
+        return str(path.relative_to(output_base)).replace("\\", "/")
+    except ValueError:
+        return str(path)

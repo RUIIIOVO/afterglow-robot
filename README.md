@@ -157,6 +157,26 @@ RAG 方案固定为：
 - `persona_prompt.txt`
 - `models/chroma_db/`
 
+当前实现还会在 `output.base_dir` 下生成分层产物：
+
+- `truth/contacts.json`
+- `truth/messages.normalized.jsonl`
+- `truth/dialog_turns.jsonl`
+- `truth/persona_profile.json`
+- `voice/utterances.normalized.jsonl`
+- `retrieval/rag_corpus.jsonl`
+- `retrieval/fewshot_candidates.jsonl`
+- `retrieval/fewshot.json`
+- `persona/persona_prompt.txt`
+- `artifacts/manifest.json`
+
+分层约定如下：
+
+- `truth/`：结构化真相源，作为后续 persona、few-shot、语音扩展的统一上游；
+- `retrieval/`：仅保存检索与 few-shot 选择所需的派生语料；
+- `voice/`：保存面向未来语音能力的规范化文本留档；
+- 根目录旧文件：为当前 CLI 与既有脚本保留兼容输出，其中 `messages.normalized.jsonl` 仍是 target-only 兼容语料，不等同于 `truth/messages.normalized.jsonl`。
+
 ## 9. 推荐目录结构
 
 以下为后续实现建议结构：
@@ -226,13 +246,14 @@ afterglow-robot/
 ### 12.1 安装依赖
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ".[embeddings]"
 ```
 
 如未使用 `-e`，至少需要：
 
 - `PyYAML`
 - `chromadb`
+- `sentence-transformers`
 
 ### 12.2 准备配置
 
@@ -246,12 +267,27 @@ copy config/config.example.yaml config/config.yaml
 - `wechat.account_wxid`（多账号必填）
 - `wechat.target_wxid`
 
+`embedding` 段当前支持：
+
+- `embedding.provider`：默认 `sentence_transformers`
+- `embedding.model_name`
+- `embedding.allow_fallback`：默认 `true`
+- `embedding.fallback_provider`：默认 `hash`
+
 当前配置校验会额外检查：
 
 - `wechat.export_dir`、`wechat.target_wxid`、`output.base_dir`、`embedding.*` 不允许为空；
+- `embedding.provider` / `embedding.fallback_provider` 目前只允许 `sentence_transformers` 或 `hash`；
 - `llm.endpoint` 必须是合法 `http/https` URL；
 - `llm.temperature` 必须在 `0-2`；
 - 所有数量与超时字段必须大于 `0`。
+
+真实 embedding 的当前策略：
+
+- 默认优先使用 `SentenceTransformers` 加载 `embedding.model_name`；
+- 若缺少 `sentence-transformers` 依赖、模型下载失败或模型加载失败，且 `embedding.allow_fallback=true`，会清晰告警并降级到 `hash`；
+- 若已构建向量库的 embedding schema、provider 或 model_name 与当前运行配置不一致，系统会要求重新执行 `ingest`，避免混用不同向量空间；旧库缺少这些 metadata 时也会视为不兼容；
+- `artifacts/manifest.json` 会记录实际使用的 embedding provider、是否发生降级及各类产物计数。
 
 ### 12.3 当前支持的导出结构与兼容策略
 
@@ -379,6 +415,7 @@ python scripts/patch_openclaw_weixin_for_afterglow.py --bridge-url "http://127.0
 
 - `ingest` 能自动识别单账号导出；
 - `contacts.json`、`messages.normalized.jsonl`、`fewshot.json`、`rag_corpus.jsonl`、`persona_prompt.txt` 全部生成；
+- `truth/persona_profile.json`、`truth/dialog_turns.jsonl`、`voice/utterances.normalized.jsonl`、`retrieval/fewshot_candidates.jsonl`、`artifacts/manifest.json` 全部生成；
 - `wechat-connect` 输出桥接补丁结果，而不是要求手工改 OpenClaw 文件；
 - 微信文本消息能进入 `/openclaw/event`，并收到本地生成的文本回复；
 - 非文本消息、缺少 ingest 产物、OpenClaw 回写失败时，返回明确错误码。
@@ -404,5 +441,6 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `messages.html` 尚未进入 ingest 解析链路；
 - `messages.txt` 仅做文本级 best-effort 解析，时间戳与富媒体字段不会完整保留；
 - 开启 `privacy mode` 的导出因隐藏账号与联系人标识，当前不建议直接用于 `target_wxid` 精准筛选；
+- `SentenceTransformers` 首次使用通常需要联网下载模型；若未安装依赖或模型不可用，会自动降级到 `hash`，效果会明显弱于真实语义 embedding；
 - 当前桥接仍只支持文本收发，不包含语音、图片、群聊等高级路由；
 - 当前会话历史仅按 `conversation_id` 本地滚动保存，尚未接入去重、摘要压缩或跨设备同步。
